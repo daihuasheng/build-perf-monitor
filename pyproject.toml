@@ -1,0 +1,13 @@
+[project]
+name = "mymonitor"
+version = "0.1.0"
+description = "A build process memory monitor."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # "pandas", # For data analysis and manipulation in plotter
+    # "matplotlib", # For plotting
+]
+
+[project.scripts]
+mymonitor = "mymonitor.main:main_cli"
