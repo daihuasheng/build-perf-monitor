@@ -5,12 +5,38 @@ import os
 import logging
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional, IO
+import threading  # Import threading
 
 logger = logging.getLogger(__name__)
 
 # Global variable to hold the pidstat process, for cleanup
 current_pidstat_proc: Optional[subprocess.Popen] = None
 current_build_proc: Optional[subprocess.Popen] = None
+
+
+def _stream_output(pipe: Optional[IO[str]], prefix: str):
+    """
+    Reads lines from a pipe and prints them with a prefix.
+    Designed to be run in a thread.
+    """
+    if not pipe:
+        return
+    try:
+        for line in iter(pipe.readline, ""):
+            # Using print directly for immediate console output, rstrip to remove trailing newline
+            print(f"{prefix}{line.rstrip()}", flush=True)
+    except ValueError:  # Pipe closed
+        logger.debug(f"{prefix} Pipe closed, stream ended.")
+    except Exception as e:
+        logger.error(f"Error in _stream_output for {prefix}: {e}", exc_info=True)
+    finally:
+        if hasattr(pipe, "close") and not pipe.closed:
+            try:
+                pipe.close()
+            except Exception as e:
+                logger.warning(f"Error closing pipe for {prefix}: {e}")
+        logger.debug(f"{prefix} Streaming thread finished.")
+
 
 def get_process_category(cmd_name: str, cmd_full: str) -> str:
     """
@@ -19,7 +45,7 @@ def get_process_category(cmd_name: str, cmd_full: str) -> str:
     """
     # Filter out vscode-server processes early
     if ".vscode-server" in cmd_full:
-        return "ignore_vscode_server" # Assign a specific category to ignore later
+        return "ignore_vscode_server"  # Assign a specific category to ignore later
 
     orig_cmd_name = cmd_name
     orig_cmd_full = cmd_full
@@ -28,15 +54,18 @@ def get_process_category(cmd_name: str, cmd_full: str) -> str:
     sh_bash_pattern = r"^(?:.*/)?(sh|bash)$"
     sh_bash_c_pattern = r"^(?:.*/)?(sh|bash)\s+-c\s+"
 
-    if (orig_cmd_name == "sh" or orig_cmd_name == "bash" or
-            re.search(sh_bash_pattern, orig_cmd_name)) and \
-            re.search(sh_bash_c_pattern, orig_cmd_full):
+    if (
+        orig_cmd_name == "sh"
+        or orig_cmd_name == "bash"
+        or re.search(sh_bash_pattern, orig_cmd_name)
+    ) and re.search(sh_bash_c_pattern, orig_cmd_full):
 
         temp_unwrapped_cmd = re.sub(sh_bash_c_pattern, "", orig_cmd_full, 1)
 
         # Remove surrounding quotes
-        if (temp_unwrapped_cmd.startswith('"') and temp_unwrapped_cmd.endswith('"')) or \
-           (temp_unwrapped_cmd.startswith("'") and temp_unwrapped_cmd.endswith("'")):
+        if (
+            temp_unwrapped_cmd.startswith('"') and temp_unwrapped_cmd.endswith('"')
+        ) or (temp_unwrapped_cmd.startswith("'") and temp_unwrapped_cmd.endswith("'")):
             temp_unwrapped_cmd = temp_unwrapped_cmd[1:-1]
 
         if temp_unwrapped_cmd:
@@ -45,25 +74,39 @@ def get_process_category(cmd_name: str, cmd_full: str) -> str:
             new_cmd_name_full = parts[0]
             # Extract basename if it's a path
             cmd_name = os.path.basename(new_cmd_name_full)
-    
+
     # --- Classification rules operate on potentially unwrapped cmd_name and cmd_full ---
     # cmd_name is now the basename of the (potentially unwrapped) command
     # cmd_full is the (potentially unwrapped) full command string
 
     # C/C++ 编译 (cc1, cc1plus, or compiler driver with -c)
-    if (cmd_name in ("cc1", "cc1plus") or
-            re.search(r"(?:^|/)(cc1|cc1plus)\s", cmd_full) or
-            ((cmd_name in ("gcc", "g++", "clang", "clang++", "cc") or re.search(r"(?:^|/)(gcc|g\+\+|clang|clang\+\+|cc)\s", cmd_full)) and
-             re.search(r"\s-c(\s|$)", cmd_full))):
+    if (
+        cmd_name in ("cc1", "cc1plus")
+        or re.search(r"(?:^|/)(cc1|cc1plus)\s", cmd_full)
+        or (
+            (
+                cmd_name in ("gcc", "g++", "clang", "clang++", "cc")
+                or re.search(r"(?:^|/)(gcc|g\+\+|clang|clang\+\+|cc)\s", cmd_full)
+            )
+            and re.search(r"\s-c(\s|$)", cmd_full)
+        )
+    ):
         return "compile_c_cpp"
 
     # 链接 (ld, lld, collect2, or compiler driver without -c and with -o)
-    if (cmd_name in ("ld", "lld", "collect2") or
-            re.search(r"(?:^|/)(ld|lld|collect2)\s", cmd_full) or
-            ((cmd_name in ("gcc", "g++", "clang", "clang++", "cc") or re.search(r"(?:^|/)(gcc|g\+\+|clang|clang\+\+|cc)\s", cmd_full)) and
-             not re.search(r"\s-c(\s|$)", cmd_full) and
-             re.search(r"\s-o\s", cmd_full) and
-             cmd_name not in ("cc1", "cc1plus"))):
+    if (
+        cmd_name in ("ld", "lld", "collect2")
+        or re.search(r"(?:^|/)(ld|lld|collect2)\s", cmd_full)
+        or (
+            (
+                cmd_name in ("gcc", "g++", "clang", "clang++", "cc")
+                or re.search(r"(?:^|/)(gcc|g\+\+|clang|clang\+\+|cc)\s", cmd_full)
+            )
+            and not re.search(r"\s-c(\s|$)", cmd_full)
+            and re.search(r"\s-o\s", cmd_full)
+            and cmd_name not in ("cc1", "cc1plus")
+        )
+    ):
         return "link"
 
     # 汇编
@@ -80,12 +123,17 @@ def get_process_category(cmd_name: str, cmd_full: str) -> str:
 
     # 构建系统进程
     build_systems = ["make", "ninja", "meson", "kati", "soong_ui", "siso", "gomacc"]
-    if cmd_name in build_systems or re.search(r"(?:^|/)(" + "|".join(build_systems) + r")\s", cmd_full):
-        return f"build_system_{cmd_name}" if cmd_name in build_systems else "build_system"
-
+    if cmd_name in build_systems or re.search(
+        r"(?:^|/)(" + "|".join(build_systems) + r")\s", cmd_full
+    ):
+        return (
+            f"build_system_{cmd_name}" if cmd_name in build_systems else "build_system"
+        )
 
     # Python 脚本
-    if cmd_name.startswith("python") or re.search(r"(?:^|/)python[0-9._-]*\s", cmd_full):
+    if cmd_name.startswith("python") or re.search(
+        r"(?:^|/)python[0-9._-]*\s", cmd_full
+    ):
         script_name_match = re.search(r"([a-zA-Z0-9_./-]+\.py)", cmd_full)
         module_match = re.search(r"-m\s+([a-zA-Z0-9_.-]+)", cmd_full)
         script_name_extracted = ""
@@ -96,15 +144,17 @@ def get_process_category(cmd_name: str, cmd_full: str) -> str:
             script_name_extracted = f"module_{module_match.group(1)}"
 
         if script_name_extracted:
-            # Specific QEMU scripts (add more as needed)
-            if script_name_extracted == "qapi-gen.py": return "py_qapi_gen"
-            if script_name_extracted == "decodetree.py": return "py_decodetree"
-            if script_name_extracted == "feature_to_c.py": return "py_feature_to_c"
-            # Generic with script name, removing .py for cleaner category
-            clean_script_name = script_name_extracted.replace('.py', '')
+            clean_script_name = script_name_extracted.replace(".py", "")
+            # Avoid classifying the main monitor script with its own name if it's run as a .py file
+            # For example, if mymonitor itself was a .py file and matched.
+            # However, it's usually run as an installed script, so cmd_name might be 'mymonitor'
+            # and script_name_extracted might be empty or the script path.
+            # If script_name_extracted is the entry point script name like "mymonitor",
+            # it's better to classify it as "script_python".
+            if clean_script_name == "mymonitor" or clean_script_name.startswith("module_mymonitor"):
+                 return "script_python"
             return f"script_python_{clean_script_name}"
-        return "script_python" # Fallback if no specific script name extracted
-
+        return "script_python"  # Fallback for other python invocations
 
     # Android 资源处理 (aapt, aapt2)
     if cmd_name in ("aapt", "aapt2") or re.search(r"(?:^|/)(aapt2?)\s", cmd_full):
@@ -112,16 +162,26 @@ def get_process_category(cmd_name: str, cmd_full: str) -> str:
 
     # Android 代码生成 (metalava, aidl, hidl-gen)
     android_codegen_tools = ["metalava", "aidl", "hidl-gen"]
-    if cmd_name in android_codegen_tools or re.search(r"(?:^|/)(" + "|".join(android_codegen_tools) + r")\s", cmd_full):
+    if cmd_name in android_codegen_tools or re.search(
+        r"(?:^|/)(" + "|".join(android_codegen_tools) + r")\s", cmd_full
+    ):
         return "android_codegen"
-    
+
     # Chromium 特有的一些进程 (gn, mojo)
     chromium_tools = ["gn", "mojo"]
-    if cmd_name in chromium_tools or re.search(r"(?:^|/)(" + "|".join(chromium_tools) + r")\s", cmd_full):
-        return f"chromium_tool_{cmd_name}" if cmd_name in chromium_tools else "chromium_tool"
+    if cmd_name in chromium_tools or re.search(
+        r"(?:^|/)(" + "|".join(chromium_tools) + r")\s", cmd_full
+    ):
+        return (
+            f"chromium_tool_{cmd_name}"
+            if cmd_name in chromium_tools
+            else "chromium_tool"
+        )
 
     # QEMU configure
-    if (cmd_name == "configure" or re.search(r"(?:^|/)configure\s", cmd_full)) and "qemu" in cmd_full:
+    if (
+        cmd_name == "configure" or re.search(r"(?:^|/)configure\s", cmd_full)
+    ) and "qemu" in cmd_full:
         return "qemu_configure"
 
     return f"other_{cmd_name}"
@@ -132,25 +192,33 @@ def run_command(command: str, cwd: Path, shell: bool = False) -> Tuple[int, str,
     logger.info(f"Executing command in {cwd}: {command}")
     try:
         process = subprocess.run(
-            command if shell else command.split(), # For simple commands not needing shell features
+            (
+                command if shell else command.split()
+            ),  # For simple commands not needing shell features
             cwd=cwd,
             capture_output=True,
             text=True,
-            shell=shell, # shell=True if command is a string to be interpreted by the shell
-            check=False
+            shell=shell,  # shell=True if command is a string to be interpreted by the shell
+            check=False,
         )
         if process.returncode != 0:
-            logger.warning(f"Command '{command}' failed with exit code {process.returncode} in {cwd}.")
+            logger.warning(
+                f"Command '{command}' failed with exit code {process.returncode} in {cwd}."
+            )
             if process.stdout:
                 logger.warning(f"Stdout from failed command:\n{process.stdout.strip()}")
             if process.stderr:
                 logger.warning(f"Stderr from failed command:\n{process.stderr.strip()}")
         else:
-            if process.stdout: # Log stdout even for successful commands at DEBUG level
+            if process.stdout:  # Log stdout even for successful commands at DEBUG level
                 logger.debug(f"Stdout: {process.stdout.strip()}")
-            if process.stderr: # Log stderr even for successful commands at DEBUG level (some tools use stderr for info)
+            if (
+                process.stderr
+            ):  # Log stderr even for successful commands at DEBUG level (some tools use stderr for info)
                 logger.debug(f"Stderr: {process.stderr.strip()}")
-            logger.info(f"Command finished successfully with exit code {process.returncode}")
+            logger.info(
+                f"Command finished successfully with exit code {process.returncode}"
+            )
         return process.returncode, process.stdout, process.stderr
     except Exception as e:
         logger.error(f"Failed to execute command '{command}': {e}", exc_info=True)
@@ -161,7 +229,7 @@ def run_and_monitor_build(
     project_config: Dict[str, Any],
     parallelism_level: int,
     monitoring_interval: int,
-    log_dir: Path
+    log_dir: Path,
 ):
     global current_pidstat_proc, current_build_proc
     project_name = project_config["NAME"]
@@ -172,11 +240,13 @@ def run_and_monitor_build(
     setup_command_template = project_config.get("SETUP_COMMAND_TEMPLATE", "")
 
     current_timestamp = time.strftime("%Y%m%d_%H%M%S")
-    # Change to .csv extension
-    output_log_filename = f"{project_name}_j{parallelism_level}_mem_{current_timestamp}.csv"
+    output_log_filename = (
+        f"{project_name}_j{parallelism_level}_mem_{current_timestamp}.csv"
+    )
     output_log_file = log_dir / output_log_filename
-    # pidstat_stderr_filename can remain .log
-    pidstat_stderr_filename = f"{project_name}_j{parallelism_level}_pidstat_stderr_{current_timestamp}.log"
+    pidstat_stderr_filename = (
+        f"{project_name}_j{parallelism_level}_pidstat_stderr_{current_timestamp}.log"
+    )
     pidstat_stderr_file = log_dir / pidstat_stderr_filename
 
     actual_build_command = build_command_template.replace("<N>", str(parallelism_level))
@@ -207,11 +277,11 @@ def run_and_monitor_build(
     ]
     # CSV Header row
     csv_header = "Timestamp_epoch,Category,RSS_KB,VSZ_KB,PID,Command_Name,Full_Command"
-    
+
     with open(output_log_file, "w") as f:
         for line in header_info:
             f.write(line + "\n")
-        f.write(csv_header + "\n") # Write the actual CSV header
+        f.write(csv_header + "\n")  # Write the actual CSV header
 
     # Execute setup command if defined
     if setup_command_template:
@@ -231,34 +301,52 @@ def run_and_monitor_build(
 
         # For setup commands, if they contain "source", we must use bash -c.
         # Otherwise, for commands like "make clean", shell=True with the string is robust.
-        _use_shell_for_setup = True # Default to True for setup/clean for robustness with make etc.
+        _use_shell_for_setup = (
+            True  # Default to True for setup/clean for robustness with make etc.
+        )
         _setup_cmd_to_run = setup_command_template
         if "source " in setup_command_template:
             _setup_cmd_to_run = f"bash -c '{setup_command_template}'"
             # shell=True is already implied by passing the string to run_command with shell=True
 
-        exit_code, _, _ = run_command(_setup_cmd_to_run, cwd=project_dir, shell=_use_shell_for_setup)
+        exit_code, _, _ = run_command(
+            _setup_cmd_to_run, cwd=project_dir, shell=_use_shell_for_setup
+        )
         if exit_code != 0:
-            logger.warning(f"Setup command '{setup_command_template}' failed with exit code {exit_code}. Continuing...")
+            logger.warning(
+                f"Setup command '{setup_command_template}' failed with exit code {exit_code}. Continuing..."
+            )
         else:
             logger.info("Setup command completed successfully.")
-
 
     # Execute clean command if defined
     if clean_command_template:
         logger.info(f"Executing clean command: {clean_command_template}")
         # Most clean commands (e.g., "make clean") work well with shell=True
-        exit_code, _, _ = run_command(clean_command_template, cwd=project_dir, shell=True)
+        exit_code, _, _ = run_command(
+            clean_command_template, cwd=project_dir, shell=True
+        )
         if exit_code != 0:
-            logger.warning(f"Clean command '{clean_command_template}' failed with exit code {exit_code}. Continuing...")
+            logger.warning(
+                f"Clean command '{clean_command_template}' failed with exit code {exit_code}. Continuing..."
+            )
         else:
             logger.info("Clean command completed successfully.")
 
-    pidstat_cmd = ["pidstat", "-r", "-l", "-C", process_pattern, str(monitoring_interval)]
+    pidstat_cmd = [
+        "pidstat",
+        "-r",
+        "-l",
+        "-C",
+        process_pattern,
+        str(monitoring_interval),
+    ]
     pidstat_env = os.environ.copy()
     pidstat_env["LC_ALL"] = "C"
 
     category_stats: Dict[str, Dict[str, Any]] = {}
+    stdout_thread: Optional[threading.Thread] = None
+    stderr_thread: Optional[threading.Thread] = None
 
     try:
         with open(pidstat_stderr_file, "w") as ps_err_f:
@@ -268,57 +356,90 @@ def run_and_monitor_build(
                 stdout=subprocess.PIPE,
                 stderr=ps_err_f,
                 text=True,
-                bufsize=1, 
-                env=pidstat_env
+                bufsize=1,
+                env=pidstat_env,
             )
 
             logger.info(f"Starting build command: {actual_build_command}")
             start_time_seconds = time.time()
-            
-            # Always use bash -c for build commands to handle complex commands,
-            # environment variables, and shell features consistently.
-            # The command string itself is passed to bash -c.
+
             build_cmd_to_run = f"bash -c '{actual_build_command}'"
 
             current_build_proc = subprocess.Popen(
                 build_cmd_to_run,
                 cwd=project_dir,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stdout=subprocess.PIPE,  # Keep as PIPE
+                stderr=subprocess.PIPE,  # Keep as PIPE
                 text=True,
-                shell=True
+                shell=True,
+                bufsize=1,  # Line buffered
             )
+
+            # Start threads to stream build process stdout and stderr
+            if current_build_proc.stdout:
+                stdout_thread = threading.Thread(
+                    target=_stream_output,
+                    args=(
+                        current_build_proc.stdout,
+                        f"[{project_name}-j{parallelism_level} STDOUT] ",
+                    ),
+                    daemon=True,  # Daemonize so they don't block program exit if something goes wrong
+                )
+                stdout_thread.start()
+
+            if current_build_proc.stderr:
+                stderr_thread = threading.Thread(
+                    target=_stream_output,
+                    args=(
+                        current_build_proc.stderr,
+                        f"[{project_name}-j{parallelism_level} STDERR] ",
+                    ),
+                    daemon=True,
+                )
+                stderr_thread.start()
 
             if current_pidstat_proc.stdout:
                 for line in iter(current_pidstat_proc.stdout.readline, ""):
                     line = line.strip()
                     if not line or "Linux" in line or line.startswith("Average:"):
                         continue
-                    
+
                     if re.match(r"^[0-9]{2}:[0-9]{2}:[0-9]{2}", line):
                         parts = line.split()
-                        if len(parts) < 9 or parts[2] == "PID": 
+                        if len(parts) < 9 or parts[2] == "PID":
                             continue
 
                         try:
-                            current_epoch = int(time.time()) 
+                            current_epoch = int(time.time())
                             pid = parts[2]
                             vsz_kb = parts[5]
-                            rss_kb = int(parts[6]) 
-                            
+                            rss_kb = int(parts[6])
+
                             command_name_short = parts[8]
                             command_full_str = " ".join(parts[8:])
 
-                            category = get_process_category(command_name_short, command_full_str)
+                            category = get_process_category(
+                                command_name_short, command_full_str
+                            )
+
+                            if category == "ignore_vscode_server":
+                                logger.debug(
+                                    f"Ignoring vscode-server process: {command_full_str}"
+                                )
+                                continue
 
                             # Update stats
                             if category not in category_stats:
-                                category_stats[category] = {"total_rss": 0, "peak_rss": 0, "count": 0}
+                                category_stats[category] = {
+                                    "total_rss": 0,
+                                    "peak_rss": 0,
+                                    "count": 0,
+                                }
                             category_stats[category]["total_rss"] += rss_kb
                             category_stats[category]["count"] += 1
                             if rss_kb > category_stats[category]["peak_rss"]:
                                 category_stats[category]["peak_rss"] = rss_kb
-                            
+
                             # Write data row as CSV
                             # Ensure fields with potential commas or special chars are handled if necessary
                             # For now, assuming simple string/numeric fields.
@@ -330,23 +451,46 @@ def run_and_monitor_build(
                                 f_out.write(csv_data_row + "\n")
 
                         except (IndexError, ValueError) as e:
-                            logger.warning(f"Error parsing pidstat line: '{line}'. Error: {e}")
+                            logger.warning(
+                                f"Error parsing pidstat line: '{line}'. Error: {e}"
+                            )
                             continue
-                    
+
                     # Check if build process has finished
                     if current_build_proc and current_build_proc.poll() is not None:
-                        logger.info("Build process finished, stopping pidstat line reading.")
+                        logger.info(
+                            "Build process finished (polled), stopping pidstat line reading."
+                        )
                         break
-            
-            # Ensure build process is waited for
+
+            # Ensure build process is waited for and get its exit code
             build_exit_code = -1
             if current_build_proc:
-                build_stdout, build_stderr = current_build_proc.communicate() # Wait for completion
-                build_exit_code = current_build_proc.returncode
-                logger.info(f"Build stdout:\n{build_stdout}")
-                if build_stderr:
-                     logger.error(f"Build stderr:\n{build_stderr}")
+                build_exit_code = (
+                    current_build_proc.wait()
+                )  # Wait for process to terminate
+                logger.info(
+                    f"Build process .wait() completed with exit code: {build_exit_code}"
+                )
 
+            # Wait for streaming threads to finish (they should finish quickly after process ends)
+            # Give them a short timeout.
+            if stdout_thread and stdout_thread.is_alive():
+                logger.debug("Waiting for STDOUT streaming thread to finish...")
+                stdout_thread.join(timeout=2)
+                if stdout_thread.is_alive():
+                    logger.warning("STDOUT streaming thread did not finish in time.")
+            if stderr_thread and stderr_thread.is_alive():
+                logger.debug("Waiting for STDERR streaming thread to finish...")
+                stderr_thread.join(timeout=2)
+                if stderr_thread.is_alive():
+                    logger.warning("STDERR streaming thread did not finish in time.")
+
+            # Output previously captured by communicate() is now streamed.
+            # We can log a message indicating this.
+            logger.info(
+                "Build process stdout and stderr were streamed to the console during execution."
+            )
 
         end_time_seconds = time.time()
         duration_seconds = int(end_time_seconds - start_time_seconds)
@@ -355,42 +499,64 @@ def run_and_monitor_build(
         s = duration_seconds % 60
         formatted_duration = f"{h:02d}:{m:02d}:{s:02d}"
 
-
         logger.info(f"Build command finished with exit code: {build_exit_code}")
-        logger.info(f"Build total time: {formatted_duration} ({duration_seconds} seconds)")
+        logger.info(
+            f"Build total time: {formatted_duration} ({duration_seconds} seconds)"
+        )
 
         # Write summary to CSV file as comments
         with open(output_log_file, "a") as f_out:
-            f_out.write(f"# Build Duration: {formatted_duration} ({duration_seconds} seconds)\n")
+            f_out.write(
+                f"# Build Duration: {formatted_duration} ({duration_seconds} seconds)\n"
+            )
             f_out.write("\n# === Memory Usage Summary by Category ===\n")
             # Summary header as comment
-            f_out.write(f"# {'Category':<30} , {'Total RSS (KB)':>15} , {'Peak RSS (KB)':>15} , {'Count':>15}\n")
+            f_out.write(
+                f"# {'Category':<30} , {'Total RSS (KB)':>15} , {'Peak RSS (KB)':>15} , {'Count':>15}\n"
+            )
             f_out.write(f"# {'-'*30} , {'-'*15} , {'-'*15} , {'-'*15}\n")
             for cat, stats in sorted(category_stats.items()):
                 # Summary data as comment
-                f_out.write(f"# {cat:<30} , {stats['total_rss']:>15} , {stats['peak_rss']:>15} , {stats['count']:>15}\n")
+                f_out.write(
+                    f"# {cat:<30} , {stats['total_rss']:>15} , {stats['peak_rss']:>15} , {stats['count']:>15}\n"
+                )
             f_out.write("# === End of Summary ===\n")
 
         if build_exit_code == 0:
-            logger.info(f"Project '{project_name}' (j{parallelism_level}) built successfully.")
+            logger.info(
+                f"Project '{project_name}' (j{parallelism_level}) built successfully."
+            )
         else:
-            logger.warning(f"Project '{project_name}' (j{parallelism_level}) build failed with exit code {build_exit_code}.")
+            logger.warning(
+                f"Project '{project_name}' (j{parallelism_level}) build failed with exit code {build_exit_code}."
+            )
 
     except Exception as e:
-        logger.error(f"An error occurred during monitoring for {project_name} j{parallelism_level}: {e}", exc_info=True)
+        logger.error(
+            f"An error occurred during monitoring for {project_name} j{parallelism_level}: {e}",
+            exc_info=True,
+        )
     finally:
         if current_pidstat_proc and current_pidstat_proc.poll() is None:
-            logger.info(f"Terminating pidstat process (PID: {current_pidstat_proc.pid})...")
+            logger.info(
+                f"Terminating pidstat process (PID: {current_pidstat_proc.pid})..."
+            )
             current_pidstat_proc.terminate()
             try:
                 current_pidstat_proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                logger.warning(f"pidstat process (PID: {current_pidstat_proc.pid}) did not terminate, killing...")
+                logger.warning(
+                    f"pidstat process (PID: {current_pidstat_proc.pid}) did not terminate, killing..."
+                )
                 current_pidstat_proc.kill()
             current_pidstat_proc = None
-        
-        if current_build_proc and current_build_proc.poll() is None: # Should be finished by now
-            logger.info(f"Terminating build process (PID: {current_build_proc.pid}) if still running...")
+
+        if (
+            current_build_proc and current_build_proc.poll() is None
+        ):  # Should be finished by now
+            logger.info(
+                f"Terminating build process (PID: {current_build_proc.pid}) if still running..."
+            )
             current_build_proc.terminate()
             try:
                 current_build_proc.wait(timeout=5)
@@ -400,6 +566,7 @@ def run_and_monitor_build(
         logger.info(f"Monitoring for {project_name} j{parallelism_level} finished.")
         logger.info("=" * 80)
 
+
 def check_pidstat_installed():
     try:
         subprocess.run(["pidstat", "-V"], capture_output=True, check=True)
@@ -407,16 +574,21 @@ def check_pidstat_installed():
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
 
+
 def cleanup_processes():
     """Ensures monitored processes are cleaned up on exit."""
     logger.info("Cleaning up any running subprocesses...")
     global current_pidstat_proc, current_build_proc
     if current_pidstat_proc and current_pidstat_proc.poll() is None:
-        logger.info(f"Terminating pidstat (PID {current_pidstat_proc.pid}) from cleanup handler.")
+        logger.info(
+            f"Terminating pidstat (PID {current_pidstat_proc.pid}) from cleanup handler."
+        )
         current_pidstat_proc.terminate()
-        current_pidstat_proc.kill() # Force kill if terminate doesn't work quickly
+        current_pidstat_proc.kill()  # Force kill if terminate doesn't work quickly
     if current_build_proc and current_build_proc.poll() is None:
-        logger.info(f"Terminating build process (PID {current_build_proc.pid}) from cleanup handler.")
+        logger.info(
+            f"Terminating build process (PID {current_build_proc.pid}) from cleanup handler."
+        )
         current_build_proc.terminate()
         current_build_proc.kill()
     logger.info("Cleanup finished.")
