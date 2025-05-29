@@ -172,8 +172,10 @@ def run_and_monitor_build(
     setup_command_template = project_config.get("SETUP_COMMAND_TEMPLATE", "")
 
     current_timestamp = time.strftime("%Y%m%d_%H%M%S")
-    output_log_filename = f"{project_name}_j{parallelism_level}_mem_{current_timestamp}.log"
+    # Change to .csv extension
+    output_log_filename = f"{project_name}_j{parallelism_level}_mem_{current_timestamp}.csv"
     output_log_file = log_dir / output_log_filename
+    # pidstat_stderr_filename can remain .log
     pidstat_stderr_filename = f"{project_name}_j{parallelism_level}_pidstat_stderr_{current_timestamp}.log"
     pidstat_stderr_file = log_dir / pidstat_stderr_filename
 
@@ -185,8 +187,7 @@ def run_and_monitor_build(
     logger.info(f"Source Directory: {project_dir}")
     logger.info(f"Build Command: {actual_build_command}")
     logger.info(f"Process Pattern (pidstat -C): {process_pattern}")
-    logger.info(f"Memory Log: {output_log_file}")
-    logger.info(f"Monitoring Interval: {monitoring_interval} seconds")
+    logger.info(f"Memory Log (CSV): {output_log_file}")
     logger.info("-" * 80)
 
     if not project_dir.is_dir():
@@ -194,7 +195,7 @@ def run_and_monitor_build(
         logger.info("=" * 80)
         return
 
-    # Write log header
+    # Write log header to CSV
     header_info = [
         f"# Project: {project_name}",
         f"# Parallelism: -j{parallelism_level}",
@@ -203,11 +204,14 @@ def run_and_monitor_build(
         f"# Process Pattern (for pidstat -C): {process_pattern}",
         f"# Monitoring Interval: {monitoring_interval} seconds",
         f"# Log Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}",
-        "# Columns: Timestamp_epoch Category RSS(KB) VSZ(KB) PID Command_Name Full_Command"
     ]
+    # CSV Header row
+    csv_header = "Timestamp_epoch,Category,RSS_KB,VSZ_KB,PID,Command_Name,Full_Command"
+    
     with open(output_log_file, "w") as f:
         for line in header_info:
             f.write(line + "\n")
+        f.write(csv_header + "\n") # Write the actual CSV header
 
     # Execute setup command if defined
     if setup_command_template:
@@ -226,22 +230,7 @@ def run_and_monitor_build(
         # The `run_command` function itself will handle `command.split()` if `shell=False`.
 
         # For setup commands, if they contain "source", we must use bash -c.
-        # Otherwise, we can pass the command as is, and run_command will split it if shell=False.
-        # Let's make it consistent: if it needs shell features, wrap with bash -c.
-        # For simple commands, run_command's default shell=False and command.split() is fine.
-        # The current run_command takes the command string and a shell boolean.
-        
-        # If setup_command_template contains "source ", it needs to be run via "bash -c '...'"
-        # and shell=True in Popen.
-        # If it's a simple command like "make clean", it can be run as a list with shell=False,
-        # or as a string with shell=True.
-        # The run_command function handles this: if shell=True, it passes the string;
-        # if shell=False, it splits the string.
-
-        # Decision for setup_cmd_to_run and use_shell_for_setup:
-        # If "source " is present, we must use bash -c and shell=True.
         # Otherwise, for commands like "make clean", shell=True with the string is robust.
-        
         _use_shell_for_setup = True # Default to True for setup/clean for robustness with make etc.
         _setup_cmd_to_run = setup_command_template
         if "source " in setup_command_template:
@@ -269,7 +258,7 @@ def run_and_monitor_build(
     pidstat_env = os.environ.copy()
     pidstat_env["LC_ALL"] = "C"
 
-    category_stats: Dict[str, Dict[str, Any]] = {} # {"category_name": {"total_rss": 0, "peak_rss": 0, "count": 0}}
+    category_stats: Dict[str, Dict[str, Any]] = {}
 
     try:
         with open(pidstat_stderr_file, "w") as ps_err_f:
@@ -279,7 +268,7 @@ def run_and_monitor_build(
                 stdout=subprocess.PIPE,
                 stderr=ps_err_f,
                 text=True,
-                bufsize=1, # Line buffered
+                bufsize=1, 
                 env=pidstat_env
             )
 
@@ -292,12 +281,12 @@ def run_and_monitor_build(
             build_cmd_to_run = f"bash -c '{actual_build_command}'"
 
             current_build_proc = subprocess.Popen(
-                build_cmd_to_run, # Pass the full command string to bash -c
+                build_cmd_to_run,
                 cwd=project_dir,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                shell=True # shell=True is necessary when passing a command string to be interpreted by a shell
+                shell=True
             )
 
             if current_pidstat_proc.stdout:
@@ -308,16 +297,14 @@ def run_and_monitor_build(
                     
                     if re.match(r"^[0-9]{2}:[0-9]{2}:[0-9]{2}", line):
                         parts = line.split()
-                        if len(parts) < 9 or parts[2] == "PID": # Header or malformed
+                        if len(parts) < 9 or parts[2] == "PID": 
                             continue
 
                         try:
-                            current_epoch = int(time.time()) # pidstat time is relative, use current epoch
-                            # Time UID PID minflt/s majflt/s VSZ RSS %MEM Command
-                            # $1   $2  $3  $4       $5       $6  $7  $8   $9...
+                            current_epoch = int(time.time()) 
                             pid = parts[2]
                             vsz_kb = parts[5]
-                            rss_kb = int(parts[6]) # Ensure RSS is int for calculations
+                            rss_kb = int(parts[6]) 
                             
                             command_name_short = parts[8]
                             command_full_str = " ".join(parts[8:])
@@ -332,8 +319,15 @@ def run_and_monitor_build(
                             if rss_kb > category_stats[category]["peak_rss"]:
                                 category_stats[category]["peak_rss"] = rss_kb
                             
+                            # Write data row as CSV
+                            # Ensure fields with potential commas or special chars are handled if necessary
+                            # For now, assuming simple string/numeric fields.
+                            # If Command_Name or Full_Command can contain commas, they should be quoted.
+                            # For simplicity, we'll join with comma. Pandas can usually handle this.
+                            csv_data_row = f"{current_epoch},{category},{rss_kb},{vsz_kb},{pid},{command_name_short},\"{command_full_str.replace('\"', '\"\"')}\""
+
                             with open(output_log_file, "a") as f_out:
-                                f_out.write(f"{current_epoch}\t{category}\t{rss_kb}\t{vsz_kb}\t{pid}\t{command_name_short}\t{command_full_str}\n")
+                                f_out.write(csv_data_row + "\n")
 
                         except (IndexError, ValueError) as e:
                             logger.warning(f"Error parsing pidstat line: '{line}'. Error: {e}")
@@ -361,16 +355,20 @@ def run_and_monitor_build(
         s = duration_seconds % 60
         formatted_duration = f"{h:02d}:{m:02d}:{s:02d}"
 
+
         logger.info(f"Build command finished with exit code: {build_exit_code}")
         logger.info(f"Build total time: {formatted_duration} ({duration_seconds} seconds)")
 
+        # Write summary to CSV file as comments
         with open(output_log_file, "a") as f_out:
             f_out.write(f"# Build Duration: {formatted_duration} ({duration_seconds} seconds)\n")
             f_out.write("\n# === Memory Usage Summary by Category ===\n")
-            f_out.write(f"# {'Category':<30} {'Total RSS (KB)':>15} {'Peak RSS (KB)':>15} {'Count':>15}\n")
-            f_out.write(f"# {'-'*30} {'-'*15} {'-'*15} {'-'*15}\n")
+            # Summary header as comment
+            f_out.write(f"# {'Category':<30} , {'Total RSS (KB)':>15} , {'Peak RSS (KB)':>15} , {'Count':>15}\n")
+            f_out.write(f"# {'-'*30} , {'-'*15} , {'-'*15} , {'-'*15}\n")
             for cat, stats in sorted(category_stats.items()):
-                f_out.write(f"# {cat:<30} {stats['total_rss']:>15} {stats['peak_rss']:>15} {stats['count']:>15}\n")
+                # Summary data as comment
+                f_out.write(f"# {cat:<30} , {stats['total_rss']:>15} , {stats['peak_rss']:>15} , {stats['count']:>15}\n")
             f_out.write("# === End of Summary ===\n")
 
         if build_exit_code == 0:

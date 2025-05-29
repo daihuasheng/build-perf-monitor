@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import List, Dict, Any
 
 from .monitor_utils import run_and_monitor_build, check_pidstat_installed, cleanup_processes
+from .plotter import generate_plots_for_logs
 
 # --- Global Configuration ---
 MONITORING_INTERVAL_SECONDS = 5
@@ -74,6 +75,11 @@ def main_cli():
         type=str,
         help=f"Comma-separated list of parallelism levels (e.g., 4,8,16). Default: {','.join(DEFAULT_PARALLELISM_LEVELS)}"
     )
+    parser.add_argument(
+        "--skip-plots",
+        action="store_true",
+        help="Skip generating plots after monitoring."
+    )
     args = parser.parse_args()
 
     if not check_pidstat_installed():
@@ -138,11 +144,22 @@ def main_cli():
                 project_config=project_config,
                 parallelism_level=level,
                 monitoring_interval=MONITORING_INTERVAL_SECONDS,
-                log_dir=absolute_log_dir
+                log_dir=absolute_log_dir # Pass the absolute log directory path
             )
         logger.info(f"<<< Finished processing for project: {project_config['NAME']}")
 
     logger.info("All specified build and monitoring tasks completed.")
+
+    # --- Generate plots ---
+    if not args.skip_plots:
+        logger.info("--- Starting plot generation ---")
+        try:
+            generate_plots_for_logs(absolute_log_dir) # Pass the absolute log directory path
+            logger.info("--- Plot generation finished ---")
+        except Exception as e:
+            logger.error(f"An error occurred during plot generation: {e}", exc_info=True)
+    else:
+        logger.info("Skipping plot generation as per --skip-plots flag.")
 
 
 if __name__ == "__main__":
