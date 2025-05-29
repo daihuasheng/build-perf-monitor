@@ -17,6 +17,10 @@ def get_process_category(cmd_name: str, cmd_full: str) -> str:
     Categorizes a process based on its command name and full command line.
     This is a Python translation of the awk get_process_category function.
     """
+    # Filter out vscode-server processes early
+    if ".vscode-server" in cmd_full:
+        return "ignore_vscode_server" # Assign a specific category to ignore later
+
     orig_cmd_name = cmd_name
     orig_cmd_full = cmd_full
 
