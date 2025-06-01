@@ -4,14 +4,15 @@ import sys
 import signal
 from pathlib import Path
 from typing import List, Dict, Any
+import time # Add this import
 
 from .monitor_utils import run_and_monitor_build, check_pidstat_installed, cleanup_processes
 from .plotter import generate_plots_for_logs
 
 # --- Global Configuration ---
-MONITORING_INTERVAL_SECONDS = 5
-LOG_DIR_NAME = "logs"
+MONITORING_INTERVAL_SECONDS = 1
 DEFAULT_PARALLELISM_LEVELS = ["4", "8", "16"]
+
 
 # --- Project Configurations ---
 # (Similar to PROJECTS_CONFIG in Bash)
@@ -51,7 +52,13 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+try:
+    PROJECT_ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+except NameError:
+    PROJECT_ROOT_DIR = Path.cwd()
+    logger.warning("__file__ not defined, using current working directory as project root for logs.")
 
+LOG_ROOT_DIR = PROJECT_ROOT_DIR / "logs"
 
 def signal_handler(sig, frame):
     logger.warning(f"Signal {sig} received, initiating cleanup...")
@@ -80,18 +87,40 @@ def main_cli():
         action="store_true",
         help="Skip generating plots after monitoring."
     )
+    parser.add_argument(
+        "--metric-type",
+        type=str,
+        default="pss_psutil",
+        choices=["rss_pidstat", "pss_psutil"],
+        help="Metric type of memory to be collected (E.g. rss_pidstat, pss_psutil)。"
+    )
     args = parser.parse_args()
 
-    if not check_pidstat_installed():
-        logger.error("'pidstat' command not found. Please install 'sysstat' package.")
-        logger.error("Example: sudo apt-get install sysstat (Debian/Ubuntu)")
-        logger.error("Or:     sudo yum install sysstat (CentOS/RHEL)")
-        sys.exit(1)
+    # 检查所选收集器的依赖项
+    if args.metric_type == "rss_pidstat":
+        if not check_pidstat_installed():
+            logger.error("'pidstat' 命令未找到，无法使用 'rss_pidstat' 收集器。请安装 'sysstat' 包。")
+            sys.exit(1)
+    elif args.metric_type == "pss_psutil":
+        try:
+            import psutil # 检查 psutil 是否可以导入
+            logger.info(f"将使用 psutil 版本 {psutil.__version__} 进行 PSS 收集。")
+        except ImportError:
+            # 理想情况下，这种情况应该由依赖管理 (pyproject.toml) 捕获
+            # 但运行时检查是一个后备方案。
+            logger.error("'psutil' 库未找到，无法使用 'pss_psutil' 收集器。请安装它 (例如: pip install psutil)。")
+            sys.exit(1)
+        except AttributeError: # 适用于可能没有 __version__ 属性的旧版 psutil
+             logger.info(f"将使用 psutil 进行 PSS 收集 (未找到版本属性)。")
 
-    log_dir = Path(LOG_DIR_NAME)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    absolute_log_dir = log_dir.resolve()
-    logger.info(f"Log files will be saved in: {absolute_log_dir}")
+
+    # Create a unique directory for this run's logs and plots
+    current_run_timestamp = time.strftime("%Y%m%d_%H%M%S")
+    run_specific_log_dir_name = f"run_{current_run_timestamp}"
+    current_run_output_dir = LOG_ROOT_DIR / run_specific_log_dir_name
+    current_run_output_dir.mkdir(parents=True, exist_ok=True)
+    
+    logger.info(f"Log files and plots for this run will be saved in: {current_run_output_dir.resolve()}")
 
 
     selected_project_names: List[str] = []
@@ -144,7 +173,8 @@ def main_cli():
                 project_config=project_config,
                 parallelism_level=level,
                 monitoring_interval=MONITORING_INTERVAL_SECONDS,
-                log_dir=absolute_log_dir # Pass the absolute log directory path
+                log_dir=current_run_output_dir, # Pass the new run-specific directory
+                collector_type=args.metric_type # Pass the selected collector type
             )
         logger.info(f"<<< Finished processing for project: {project_config['NAME']}")
 
@@ -154,7 +184,8 @@ def main_cli():
     if not args.skip_plots:
         logger.info("--- Starting plot generation ---")
         try:
-            generate_plots_for_logs(absolute_log_dir) # Pass the absolute log directory path
+            # Pass the same run-specific directory for plots
+            generate_plots_for_logs(current_run_output_dir) 
             logger.info("--- Plot generation finished ---")
         except Exception as e:
             logger.error(f"An error occurred during plot generation: {e}", exc_info=True)

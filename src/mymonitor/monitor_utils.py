@@ -4,14 +4,21 @@ import subprocess
 import os
 import logging
 from pathlib import Path
-from typing import List, Dict, Any, Tuple, Optional, IO
-import threading  # Import threading
+from typing import Dict, Any, Tuple, Optional, IO
+import threading
+
+# Import collectors
+from .memory_collectors.base import AbstractMemoryCollector
+from .memory_collectors.rss_pidstat_collector import RssPidstatCollector
+from .memory_collectors.pss_psutil_collector import PssPsutilCollector
+
 
 logger = logging.getLogger(__name__)
 
 # Global variable to hold the pidstat process, for cleanup
-current_pidstat_proc: Optional[subprocess.Popen] = None
+# current_pidstat_proc: Optional[subprocess.Popen] = None # Now managed by collector
 current_build_proc: Optional[subprocess.Popen] = None
+active_memory_collector: Optional[AbstractMemoryCollector] = None
 
 
 def _stream_output(pipe: Optional[IO[str]], prefix: str):
@@ -151,8 +158,10 @@ def get_process_category(cmd_name: str, cmd_full: str) -> str:
             # and script_name_extracted might be empty or the script path.
             # If script_name_extracted is the entry point script name like "mymonitor",
             # it's better to classify it as "script_python".
-            if clean_script_name == "mymonitor" or clean_script_name.startswith("module_mymonitor"):
-                 return "script_python"
+            if clean_script_name == "mymonitor" or clean_script_name.startswith(
+                "module_mymonitor"
+            ):
+                return "script_python"
             return f"script_python_{clean_script_name}"
         return "script_python"  # Fallback for other python invocations
 
@@ -229,9 +238,10 @@ def run_and_monitor_build(
     project_config: Dict[str, Any],
     parallelism_level: int,
     monitoring_interval: int,
-    log_dir: Path,
+    log_dir: Path, # This is the run-specific directory from main.py
+    collector_type: str = "pss_psutil", 
 ):
-    global current_pidstat_proc, current_build_proc
+    global current_build_proc, active_memory_collector
     project_name = project_config["NAME"]
     project_dir = Path(project_config["DIR"])
     build_command_template = project_config["BUILD_COMMAND_TEMPLATE"]
@@ -239,335 +249,297 @@ def run_and_monitor_build(
     clean_command_template = project_config.get("CLEAN_COMMAND_TEMPLATE", "")
     setup_command_template = project_config.get("SETUP_COMMAND_TEMPLATE", "")
 
-    current_timestamp = time.strftime("%Y%m%d_%H%M%S")
-    output_log_filename = (
-        f"{project_name}_j{parallelism_level}_mem_{current_timestamp}.csv"
-    )
-    output_log_file = log_dir / output_log_filename
-    pidstat_stderr_filename = (
-        f"{project_name}_j{parallelism_level}_pidstat_stderr_{current_timestamp}.log"
-    )
-    pidstat_stderr_file = log_dir / pidstat_stderr_filename
+    current_timestamp_str = time.strftime("%Y%m%d_%H%M%S")
+    
+    # Define filenames for CSV and the new summary log
+    base_filename_part = f"{project_name}_j{parallelism_level}_mem_{collector_type}_{current_timestamp_str}"
+    output_csv_filename = f"{base_filename_part}.csv"
+    output_summary_log_filename = f"{base_filename_part}_summary.log" # New summary log file name
+    
+    output_csv_file = log_dir / output_csv_filename
+    output_summary_log_file = log_dir / output_summary_log_filename # Path for the new summary log
+
+    # pidstat aux log will be temporary and merged into the summary log
+    collector_aux_log_file = log_dir / f"{base_filename_part}_pidstat_aux.log" 
 
     actual_build_command = build_command_template.replace("<N>", str(parallelism_level))
 
-    logger.info("=" * 80)
-    logger.info(f"Project: {project_name}")
-    logger.info(f"Parallelism: -j{parallelism_level}")
-    logger.info(f"Source Directory: {project_dir}")
-    logger.info(f"Build Command: {actual_build_command}")
-    logger.info(f"Process Pattern (pidstat -C): {process_pattern}")
-    logger.info(f"Memory Log (CSV): {output_log_file}")
-    logger.info("-" * 80)
+    # --- Initial Logging to Summary Log File and Console ---
+    summary_log_header_content = []
+    summary_log_header_content.append("=" * 80)
+    summary_log_header_content.append(f"Project: {project_name}")
+    summary_log_header_content.append(f"Parallelism: -j{parallelism_level}")
+    summary_log_header_content.append(f"Memory Metric: {collector_type.upper()}")
+    summary_log_header_content.append(f"Source Directory: {project_dir}")
+    summary_log_header_content.append(f"Build Command: {actual_build_command}")
+    summary_log_header_content.append(f"Process Pattern (for collector): {process_pattern}")
+    summary_log_header_content.append(f"Monitoring Interval (approx): {monitoring_interval} seconds")
+    summary_log_header_content.append(f"Log Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    summary_log_header_content.append(f"Output CSV File: {output_csv_file.name}")
+    summary_log_header_content.append(f"Summary Log File: {output_summary_log_file.name}")
+    if collector_type == "rss_pidstat":
+        summary_log_header_content.append(f"Pidstat Aux Log (temporary, will be merged): {collector_aux_log_file.name}")
+    summary_log_header_content.append("-" * 80)
+
+    # Write initial info to console logger (using '-' for section breaks to differentiate)
+    for line in summary_log_header_content:
+        logger.info(line.replace("=", "-")) 
+
+    # Write initial info to the summary log file
+    with open(output_summary_log_file, "w") as f_summary:
+        for line in summary_log_header_content:
+            f_summary.write(line + "\n")
+        f_summary.write("\n") # Add a newline for separation before next content
 
     if not project_dir.is_dir():
-        logger.error(f"Project directory '{project_dir}' does not exist. Skipping.")
-        logger.info("=" * 80)
+        error_msg = f"Project directory '{project_dir}' does not exist. Skipping."
+        logger.error(error_msg)
+        with open(output_summary_log_file, "a") as f_summary:
+            f_summary.write(f"ERROR: {error_msg}\n")
+        logger.info("=" * 80) # Console section end
         return
 
-    # Write log header to CSV
-    header_info = [
-        f"# Project: {project_name}",
-        f"# Parallelism: -j{parallelism_level}",
-        f"# Source Directory: {project_dir}",
-        f"# Build Command: {actual_build_command}",
-        f"# Process Pattern (for pidstat -C): {process_pattern}",
-        f"# Monitoring Interval: {monitoring_interval} seconds",
-        f"# Log Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}",
-    ]
-    # CSV Header row
-    csv_header = "Timestamp_epoch,Category,RSS_KB,VSZ_KB,PID,Command_Name,Full_Command"
+    collector_kwargs = {}
+    if collector_type == "rss_pidstat":
+        collector_kwargs["pidstat_stderr_file"] = collector_aux_log_file # pidstat still writes to its aux file first
+        active_memory_collector = RssPidstatCollector(
+            process_pattern, monitoring_interval, **collector_kwargs
+        )
+    elif collector_type == "pss_psutil":
+        active_memory_collector = PssPsutilCollector(
+            process_pattern, monitoring_interval, **collector_kwargs
+        )
+    else:
+        error_msg = f"Unsupported collector type: {collector_type}. Exiting."
+        logger.error(error_msg)
+        with open(output_summary_log_file, "a") as f_summary:
+            f_summary.write(f"ERROR: {error_msg}\n")
+        return
+    
+    metric_fields_header = active_memory_collector.get_metric_fields()
+    primary_metric_to_track = metric_fields_header[0] if metric_fields_header else None
+    csv_header_parts = ["Timestamp_epoch", "Category"] + metric_fields_header + ["PID", "Command_Name", "Full_Command"]
+    csv_header = ",".join(csv_header_parts)
 
-    with open(output_log_file, "w") as f:
-        for line in header_info:
-            f.write(line + "\n")
-        f.write(csv_header + "\n")  # Write the actual CSV header
+    # Write only header to CSV file (no more metadata comments)
+    with open(output_csv_file, "w") as f_csv:
+        f_csv.write(csv_header + "\n")
 
-    # Execute setup command if defined
+    # Helper function to run setup/clean commands and log their output to the summary file
+    def _run_and_log_command_to_summary(cmd_str: str, cmd_desc: str, cwd_path: Path, shell_bool: bool, summary_file: Path):
+        logger.info(f"Executing {cmd_desc} command: {cmd_str}")
+        with open(summary_file, "a") as f_s:
+            f_s.write(f"--- {cmd_desc} Command ---\n")
+            f_s.write(f"Command: {cmd_str}\n")
+            f_s.write(f"Directory: {cwd_path}\n")
+        
+        exit_code, stdout_val, stderr_val = run_command(cmd_str, cwd=cwd_path, shell=shell_bool)
+        
+        with open(summary_file, "a") as f_s:
+            f_s.write(f"Exit Code: {exit_code}\n")
+            if stdout_val: f_s.write(f"Stdout:\n{stdout_val.strip()}\n")
+            if stderr_val: f_s.write(f"Stderr:\n{stderr_val.strip()}\n")
+            f_s.write(f"--- End {cmd_desc} Command ---\n\n")
+
+        if exit_code != 0:
+            logger.warning(f"{cmd_desc} command failed (code {exit_code}). Continuing...")
+        else:
+            logger.info(f"{cmd_desc} command completed.")
+        return exit_code
+
     if setup_command_template:
-        logger.info(f"Executing setup command: {setup_command_template}")
-        # If 'source' is present, or if it's a complex command, it likely needs a shell.
-        # For simplicity and consistency with build command, we can default to using bash -c
-        # if the command is non-trivial or explicitly needs shell features.
-        # However, run_command itself takes a 'shell' boolean.
-        # If setup_command_template is simple like "mkdir foo", shell=False is fine.
-        # If it's "source env.sh && cmd", shell=True and passing the whole string is needed.
-
-        # Let's refine how shell is determined for setup_cmd_to_run
-        # If "source " is in the command, it definitely needs a shell that understands 'source'.
-        # We'll pass the full string to `bash -c` in this case.
-        # For other commands, we can let `run_command` decide based on its `shell` param.
-        # The `run_command` function itself will handle `command.split()` if `shell=False`.
-
-        # For setup commands, if they contain "source", we must use bash -c.
-        # Otherwise, for commands like "make clean", shell=True with the string is robust.
-        _use_shell_for_setup = (
-            True  # Default to True for setup/clean for robustness with make etc.
-        )
+        _use_shell_for_setup = True 
         _setup_cmd_to_run = setup_command_template
-        if "source " in setup_command_template:
-            _setup_cmd_to_run = f"bash -c '{setup_command_template}'"
-            # shell=True is already implied by passing the string to run_command with shell=True
+        if "source " in setup_command_template: # Handle 'source' for shell environment setup
+            _setup_cmd_to_run = f"bash -c '. {setup_command_template}'" # Use '.' for sourcing in bash -c
+        _run_and_log_command_to_summary(_setup_cmd_to_run, "Setup", project_dir, _use_shell_for_setup, output_summary_log_file)
 
-        exit_code, _, _ = run_command(
-            _setup_cmd_to_run, cwd=project_dir, shell=_use_shell_for_setup
-        )
-        if exit_code != 0:
-            logger.warning(
-                f"Setup command '{setup_command_template}' failed with exit code {exit_code}. Continuing..."
-            )
-        else:
-            logger.info("Setup command completed successfully.")
-
-    # Execute clean command if defined
     if clean_command_template:
-        logger.info(f"Executing clean command: {clean_command_template}")
-        # Most clean commands (e.g., "make clean") work well with shell=True
-        exit_code, _, _ = run_command(
-            clean_command_template, cwd=project_dir, shell=True
-        )
-        if exit_code != 0:
-            logger.warning(
-                f"Clean command '{clean_command_template}' failed with exit code {exit_code}. Continuing..."
-            )
-        else:
-            logger.info("Clean command completed successfully.")
+        _run_and_log_command_to_summary(clean_command_template, "Clean", project_dir, True, output_summary_log_file)
 
-    pidstat_cmd = [
-        "pidstat",
-        "-r",
-        "-l",
-        "-C",
-        process_pattern,
-        str(monitoring_interval),
-    ]
-    pidstat_env = os.environ.copy()
-    pidstat_env["LC_ALL"] = "C"
-
-    category_stats: Dict[str, Dict[str, Any]] = {}
+    category_stats: Dict[str, Dict[str, Any]] = {} 
     stdout_thread: Optional[threading.Thread] = None
     stderr_thread: Optional[threading.Thread] = None
+    build_exit_code = -1
+    start_time_seconds: Optional[float] = None
+    peak_overall_memory_kb = 0
+    peak_overall_memory_epoch = 0
 
     try:
-        with open(pidstat_stderr_file, "w") as ps_err_f:
-            logger.info(f"Starting pidstat: {' '.join(pidstat_cmd)}")
-            current_pidstat_proc = subprocess.Popen(
-                pidstat_cmd,
-                stdout=subprocess.PIPE,
-                stderr=ps_err_f,
-                text=True,
-                bufsize=1,
-                env=pidstat_env,
-            )
+        active_memory_collector.start()
+        logger.info(f"Starting build command: {actual_build_command}")
+        with open(output_summary_log_file, "a") as f_summary:
+            f_summary.write(f"--- Build Command Execution ---\n")
+            f_summary.write(f"Command: {actual_build_command}\n")
+            f_summary.write(f"Directory: {project_dir}\n")
+            f_summary.write(f"Build Start Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
 
-            logger.info(f"Starting build command: {actual_build_command}")
-            start_time_seconds = time.time()
 
-            build_cmd_to_run = f"bash -c '{actual_build_command}'"
+        start_time_seconds = time.time()
+        build_cmd_to_run = f"bash -c '{actual_build_command}'"
+        current_build_proc = subprocess.Popen(
+            build_cmd_to_run, cwd=project_dir, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, shell=True, bufsize=1
+        )
 
-            current_build_proc = subprocess.Popen(
-                build_cmd_to_run,
-                cwd=project_dir,
-                stdout=subprocess.PIPE,  # Keep as PIPE
-                stderr=subprocess.PIPE,  # Keep as PIPE
-                text=True,
-                shell=True,
-                bufsize=1,  # Line buffered
-            )
+        if current_build_proc.stdout:
+            stdout_thread = threading.Thread(target=_stream_output, args=(current_build_proc.stdout, f"[{project_name}-j{parallelism_level} STDOUT] "), daemon=True)
+            stdout_thread.start()
+        if current_build_proc.stderr:
+            stderr_thread = threading.Thread(target=_stream_output, args=(current_build_proc.stderr, f"[{project_name}-j{parallelism_level} STDERR] "), daemon=True)
+            stderr_thread.start()
+            
+        # Append data to CSV file
+        with open(output_csv_file, "a") as f_csv: 
+            for samples_at_interval in active_memory_collector.read_samples():
+                current_epoch_time = int(time.time()) 
+                current_interval_sum_kb = 0
 
-            # Start threads to stream build process stdout and stderr
-            if current_build_proc.stdout:
-                stdout_thread = threading.Thread(
-                    target=_stream_output,
-                    args=(
-                        current_build_proc.stdout,
-                        f"[{project_name}-j{parallelism_level} STDOUT] ",
-                    ),
-                    daemon=True,  # Daemonize so they don't block program exit if something goes wrong
-                )
-                stdout_thread.start()
+                if not samples_at_interval:
+                    if current_build_proc and current_build_proc.poll() is not None:
+                        logger.info("Build process ended while collector was active.")
+                        break 
+                    continue
 
-            if current_build_proc.stderr:
-                stderr_thread = threading.Thread(
-                    target=_stream_output,
-                    args=(
-                        current_build_proc.stderr,
-                        f"[{project_name}-j{parallelism_level} STDERR] ",
-                    ),
-                    daemon=True,
-                )
-                stderr_thread.start()
-
-            if current_pidstat_proc.stdout:
-                for line in iter(current_pidstat_proc.stdout.readline, ""):
-                    line = line.strip()
-                    if not line or "Linux" in line or line.startswith("Average:"):
+                for sample in samples_at_interval:
+                    category = get_process_category(sample.command_name, sample.full_command)
+                    if category == "ignore_vscode_server": 
                         continue
 
-                    if re.match(r"^[0-9]{2}:[0-9]{2}:[0-9]{2}", line):
-                        parts = line.split()
-                        if len(parts) < 9 or parts[2] == "PID":
-                            continue
+                    row_data = [str(current_epoch_time), category]
+                    for metric_name in metric_fields_header: 
+                        row_data.append(str(sample.metrics.get(metric_name, ""))) 
+                    escaped_full_command = sample.full_command.replace('"', '""')
+                    row_data.extend([sample.pid, sample.command_name, f'"{escaped_full_command}"'])
+                    
+                    f_csv.write(",".join(row_data) + "\n")
 
-                        try:
-                            current_epoch = int(time.time())
-                            pid = parts[2]
-                            vsz_kb = parts[5]
-                            rss_kb = int(parts[6])
+                    if primary_metric_to_track:
+                        metric_value = sample.metrics.get(primary_metric_to_track)
+                        if metric_value is not None:
+                            try:
+                                current_val = int(metric_value) 
+                                if category not in category_stats or current_val > category_stats[category].get("peak_metric", float('-inf')):
+                                    category_stats[category] = {
+                                        "peak_metric": current_val,
+                                        "pid": sample.pid,
+                                        "command": sample.command_name
+                                    }
+                                current_interval_sum_kb += current_val
+                            except ValueError:
+                                logger.warning(f"Could not convert metric '{primary_metric_to_track}' value '{metric_value}' to int for category stats or sum.")
+                
+                if primary_metric_to_track and current_interval_sum_kb > peak_overall_memory_kb:
+                    peak_overall_memory_kb = current_interval_sum_kb
+                    peak_overall_memory_epoch = current_epoch_time
+                
+                f_csv.flush() 
 
-                            command_name_short = parts[8]
-                            command_full_str = " ".join(parts[8:])
+                if current_build_proc and current_build_proc.poll() is not None:
+                    logger.info("Build process finished. Stopping memory collection for this build.")
+                    break 
+        
+        if current_build_proc:
+            build_exit_code = current_build_proc.wait()
+            logger.info(f"Build process exited with code: {build_exit_code}")
+            with open(output_summary_log_file, "a") as f_summary:
+                f_summary.write(f"Build End Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f_summary.write(f"Build Exit Code: {build_exit_code}\n")
+                f_summary.write(f"--- End Build Command Execution ---\n\n")
 
-                            category = get_process_category(
-                                command_name_short, command_full_str
-                            )
+        if stdout_thread and stdout_thread.is_alive(): stdout_thread.join(timeout=5)
+        if stderr_thread and stderr_thread.is_alive(): stderr_thread.join(timeout=5)
+        logger.info("Build process stdout/stderr streaming finished.")
 
-                            if category == "ignore_vscode_server":
-                                logger.debug(
-                                    f"Ignoring vscode-server process: {command_full_str}"
-                                )
-                                continue
-
-                            # Update stats
-                            if category not in category_stats:
-                                category_stats[category] = {
-                                    "total_rss": 0,
-                                    "peak_rss": 0,
-                                    "count": 0,
-                                }
-                            category_stats[category]["total_rss"] += rss_kb
-                            category_stats[category]["count"] += 1
-                            if rss_kb > category_stats[category]["peak_rss"]:
-                                category_stats[category]["peak_rss"] = rss_kb
-
-                            # Write data row as CSV
-                            # Ensure fields with potential commas or special chars are handled if necessary
-                            # For now, assuming simple string/numeric fields.
-                            # If Command_Name or Full_Command can contain commas, they should be quoted.
-                            # For simplicity, we'll join with comma. Pandas can usually handle this.
-                            csv_data_row = f"{current_epoch},{category},{rss_kb},{vsz_kb},{pid},{command_name_short},\"{command_full_str.replace('\"', '\"\"')}\""
-
-                            with open(output_log_file, "a") as f_out:
-                                f_out.write(csv_data_row + "\n")
-
-                        except (IndexError, ValueError) as e:
-                            logger.warning(
-                                f"Error parsing pidstat line: '{line}'. Error: {e}"
-                            )
-                            continue
-
-                    # Check if build process has finished
-                    if current_build_proc and current_build_proc.poll() is not None:
-                        logger.info(
-                            "Build process finished (polled), stopping pidstat line reading."
-                        )
-                        break
-
-            # Ensure build process is waited for and get its exit code
-            build_exit_code = -1
-            if current_build_proc:
-                build_exit_code = (
-                    current_build_proc.wait()
-                )  # Wait for process to terminate
-                logger.info(
-                    f"Build process .wait() completed with exit code: {build_exit_code}"
-                )
-
-            # Wait for streaming threads to finish (they should finish quickly after process ends)
-            # Give them a short timeout.
-            if stdout_thread and stdout_thread.is_alive():
-                logger.debug("Waiting for STDOUT streaming thread to finish...")
-                stdout_thread.join(timeout=2)
-                if stdout_thread.is_alive():
-                    logger.warning("STDOUT streaming thread did not finish in time.")
-            if stderr_thread and stderr_thread.is_alive():
-                logger.debug("Waiting for STDERR streaming thread to finish...")
-                stderr_thread.join(timeout=2)
-                if stderr_thread.is_alive():
-                    logger.warning("STDERR streaming thread did not finish in time.")
-
-            # Output previously captured by communicate() is now streamed.
-            # We can log a message indicating this.
-            logger.info(
-                "Build process stdout and stderr were streamed to the console during execution."
-            )
-
+    except Exception as e:
+        error_msg = f"An error occurred during monitoring for {project_name} j{parallelism_level}: {e}"
+        logger.error(error_msg, exc_info=True)
+        with open(output_summary_log_file, "a") as f_summary:
+            f_summary.write(f"\nCRITICAL ERROR DURING MONITORING:\n{error_msg}\nDetails: {str(e)}\n")
+        if current_build_proc and current_build_proc.poll() is None: 
+             build_exit_code = current_build_proc.wait() 
+    finally:
+        if active_memory_collector:
+            logger.info(f"Stopping memory collector ({active_memory_collector.__class__.__name__})...")
+            active_memory_collector.stop()
+            active_memory_collector = None 
+        
+        if current_build_proc and current_build_proc.poll() is None:
+            logger.warning(f"Build process {current_build_proc.pid} still running in finally block, attempting to terminate.")
+            current_build_proc.terminate()
+            try:
+                current_build_proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                logger.error(f"Build process {current_build_proc.pid} did not terminate, killing.")
+                current_build_proc.kill()
+            current_build_proc = None 
+        
         end_time_seconds = time.time()
-        duration_seconds = int(end_time_seconds - start_time_seconds)
+        duration_seconds = int(end_time_seconds - start_time_seconds) if start_time_seconds is not None else 0
         h = duration_seconds // 3600
         m = (duration_seconds % 3600) // 60
         s = duration_seconds % 60
         formatted_duration = f"{h:02d}:{m:02d}:{s:02d}"
 
-        logger.info(f"Build command finished with exit code: {build_exit_code}")
-        logger.info(
-            f"Build total time: {formatted_duration} ({duration_seconds} seconds)"
-        )
-
-        # Write summary to CSV file as comments
-        with open(output_log_file, "a") as f_out:
-            f_out.write(
-                f"# Build Duration: {formatted_duration} ({duration_seconds} seconds)\n"
-            )
-            f_out.write("\n# === Memory Usage Summary by Category ===\n")
-            # Summary header as comment
-            f_out.write(
-                f"# {'Category':<30} , {'Total RSS (KB)':>15} , {'Peak RSS (KB)':>15} , {'Count':>15}\n"
-            )
-            f_out.write(f"# {'-'*30} , {'-'*15} , {'-'*15} , {'-'*15}\n")
-            for cat, stats in sorted(category_stats.items()):
-                # Summary data as comment
-                f_out.write(
-                    f"# {cat:<30} , {stats['total_rss']:>15} , {stats['peak_rss']:>15} , {stats['count']:>15}\n"
-                )
-            f_out.write("# === End of Summary ===\n")
-
-        if build_exit_code == 0:
-            logger.info(
-                f"Project '{project_name}' (j{parallelism_level}) built successfully."
-            )
+        # --- Final Summary Section for Summary Log File ---
+        final_summary_log_lines = [] # Use a list to build content for summary log
+        final_summary_log_lines.append("--- Build & Monitoring Summary ---")
+        final_summary_log_lines.append(f"Build Duration: {formatted_duration} ({duration_seconds} seconds)")
+        final_summary_log_lines.append(f"Build Exit Code: {build_exit_code}")
+        
+        if primary_metric_to_track:
+            peak_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(peak_overall_memory_epoch)) if peak_overall_memory_epoch > 0 else "N/A"
+            final_summary_log_lines.append(f"Peak Overall Memory ({primary_metric_to_track}): {peak_overall_memory_kb} KB (at {peak_time_str})")
         else:
-            logger.warning(
-                f"Project '{project_name}' (j{parallelism_level}) build failed with exit code {build_exit_code}."
-            )
+            final_summary_log_lines.append(f"Peak Overall Memory: N/A (no primary metric identified for sum)")
 
-    except Exception as e:
-        logger.error(
-            f"An error occurred during monitoring for {project_name} j{parallelism_level}: {e}",
-            exc_info=True,
-        )
-    finally:
-        if current_pidstat_proc and current_pidstat_proc.poll() is None:
-            logger.info(
-                f"Terminating pidstat process (PID: {current_pidstat_proc.pid})..."
-            )
-            current_pidstat_proc.terminate()
-            try:
-                current_pidstat_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                logger.warning(
-                    f"pidstat process (PID: {current_pidstat_proc.pid}) did not terminate, killing..."
-                )
-                current_pidstat_proc.kill()
-            current_pidstat_proc = None
+        final_summary_log_lines.append(f"Peak Memory Usage Summary (by category, based on first metric: {primary_metric_to_track if primary_metric_to_track else 'N/A'}):")
+        if category_stats:
+            for category, stats in sorted(category_stats.items()):
+                peak_val = stats.get('peak_metric', 'N/A')
+                pid_val = stats.get('pid', 'N/A')
+                cmd_val = stats.get('command', 'N/A')
+                final_summary_log_lines.append(f"  - {category}: {peak_val} (PID: {pid_val}, Command: {cmd_val})")
+        else:
+            final_summary_log_lines.append("  No category-specific peak memory data collected or primary metric not found.")
+        final_summary_log_lines.append("--- End Summary ---")
 
-        if (
-            current_build_proc and current_build_proc.poll() is None
-        ):  # Should be finished by now
-            logger.info(
-                f"Terminating build process (PID: {current_build_proc.pid}) if still running..."
-            )
-            current_build_proc.terminate()
-            try:
-                current_build_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                current_build_proc.kill()
-            current_build_proc = None
-        logger.info(f"Monitoring for {project_name} j{parallelism_level} finished.")
+        with open(output_summary_log_file, "a") as f_summary:
+            f_summary.write("\n") 
+            
+            # Merge pidstat aux log content if it exists
+            if collector_type == "rss_pidstat" and collector_aux_log_file.exists() and collector_aux_log_file.stat().st_size > 0:
+                f_summary.write("\n--- pidstat stderr output ---\n")
+                try:
+                    with open(collector_aux_log_file, "r") as f_aux:
+                        f_summary.write(f_aux.read())
+                    f_summary.write("--- End pidstat stderr output ---\n\n")
+                    try: # Attempt to delete the aux file after merging
+                        collector_aux_log_file.unlink() 
+                        logger.info(f"Merged and deleted pidstat aux log: {collector_aux_log_file.name}")
+                    except OSError as e_del:
+                        logger.warning(f"Could not delete pidstat aux log {collector_aux_log_file.name}: {e_del}")
+                except Exception as e_read_aux:
+                    error_msg_aux = f"Error reading pidstat aux log {collector_aux_log_file.name}: {e_read_aux}"
+                    f_summary.write(f"{error_msg_aux}\n")
+                    logger.error(error_msg_aux)
+            
+            for line in final_summary_log_lines:
+                f_summary.write(line + "\n")
+        
+        # Log final summary to console as well
+        for line in final_summary_log_lines:
+            logger.info(line)
+
+        logger.info(f"Monitoring for {project_name} j{parallelism_level} ({collector_type}) finished.")
+        logger.info(f"CSV data saved to: {output_csv_file}")
+        logger.info(f"Summary log saved to: {output_summary_log_file}")
         logger.info("=" * 80)
 
 
-def check_pidstat_installed():
+def check_pidstat_installed():  # This might become check_collector_dependencies()
+    # For now, RssPidstatCollector is the only one, so this is fine.
+    # If PssPsutilCollector is added, psutil installation should also be checked or handled.
     try:
         subprocess.run(["pidstat", "-V"], capture_output=True, check=True)
         return True
@@ -576,19 +548,24 @@ def check_pidstat_installed():
 
 
 def cleanup_processes():
-    """Ensures monitored processes are cleaned up on exit."""
-    logger.info("Cleaning up any running subprocesses...")
-    global current_pidstat_proc, current_build_proc
-    if current_pidstat_proc and current_pidstat_proc.poll() is None:
+    logger.info("Cleaning up any running subprocesses and collectors...")
+    global current_build_proc, active_memory_collector
+    if active_memory_collector:
         logger.info(
-            f"Terminating pidstat (PID {current_pidstat_proc.pid}) from cleanup handler."
+            f"Stopping active memory collector ({active_memory_collector.__class__.__name__}) from cleanup handler."
         )
-        current_pidstat_proc.terminate()
-        current_pidstat_proc.kill()  # Force kill if terminate doesn't work quickly
+        active_memory_collector.stop()
+        active_memory_collector = None
     if current_build_proc and current_build_proc.poll() is None:
         logger.info(
             f"Terminating build process (PID {current_build_proc.pid}) from cleanup handler."
         )
         current_build_proc.terminate()
-        current_build_proc.kill()
+        try:
+            current_build_proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            logger.error(
+                f"Build process {current_build_proc.pid} did not terminate in cleanup, killing."
+            )
+            current_build_proc.kill()
     logger.info("Cleanup finished.")

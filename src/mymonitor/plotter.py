@@ -181,17 +181,18 @@ def plot_memory_usage_from_csv(csv_filepath: Path, output_dir: Path):
 def generate_plots_for_logs(log_dir: Path):
     """
     Generates plots for all .csv files in the specified log directory.
+    Plots will be saved in the same directory as the CSV files.
     """
-    output_plot_dir = log_dir / "plots"
-    output_plot_dir.mkdir(parents=True, exist_ok=True)
+    # Plots will be saved directly in log_dir, no separate "plots" subdirectory needed here.
     
-    logger.info(f"Searching for CSV log files in: {log_dir}")
+    logger.info(f"Searching for CSV log files in: {log_dir} to generate plots.")
     csv_files = list(log_dir.glob("*.csv"))
 
     if not csv_files:
-        logger.info("No CSV log files found to generate plots for.")
+        logger.info(f"No CSV log files found in {log_dir} to generate plots for.")
         return
 
     for csv_file in csv_files:
         logger.info(f"--- Generating plot for {csv_file.name} ---")
-        plot_memory_usage_from_csv(csv_file, output_plot_dir)
+        # The output directory for the plot is the same directory where the CSV was found.
+        plot_memory_usage_from_csv(csv_file, log_dir)
