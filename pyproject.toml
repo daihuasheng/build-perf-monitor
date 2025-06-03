@@ -5,9 +5,10 @@ description = "A build process memory monitor."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "pandas", # For data analysis and manipulation in plotter
-    "matplotlib", # For plotting
-    "psutil", # For system and process utilities
+    "polars[pyarrow]", # For data analysis and manipulation, pyarrow for better CSV/Parquet performance
+    "plotly",          # For interactive plotting
+    "psutil",          # For system and process utilities
+    "kaleido",         # Optional: if you need to export plotly graphs to static images like PNG from code
 ]
 
 [project.scripts]

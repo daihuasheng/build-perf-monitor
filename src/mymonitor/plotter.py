@@ -1,9 +1,10 @@
-import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-from pathlib import Path
 import logging
+import polars as pl
+import plotly.express as px
+import plotly.graph_objects as go
 import re
+from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -14,35 +15,27 @@ MIN_TOTAL_PRIMARY_METRIC_KB_FOR_PLOT = 10240  # 10MB, will apply to the primary 
 def _get_primary_metric_from_summary_log(csv_filepath: Path) -> Optional[str]:
     """
     Parses the corresponding _summary.log file to find the primary metric used.
-    Example line: # Peak Overall Memory (PSS_KB): 12345 KB (at ...)
-    Or from header: Memory Metric: PSS_PSUTIL (implies PSS_KB) or RSS_PIDSTAT (implies RSS_KB)
+
+    Args:
+        csv_filepath: Path to the main CSV data file. The function will look
+                      for a summary log file with a similar name.
+
+    Returns:
+        The primary metric string (e.g., "RSS_KB", "PSS_KB") if found,
+        otherwise "RSS_KB" as a fallback or None if the input is a summary log.
     """
     summary_log_filename = csv_filepath.stem + "_summary.log"
-    # If csv is project_jX_mem_pss_psutil_ts.csv, summary is project_jX_mem_pss_psutil_ts_summary.log
-    # Need to adjust if stem includes _summary itself if called with summary log
-    if csv_filepath.name.endswith(
-        "_summary.log"
-    ):  # Should not happen if called with CSV
-        return None
-
-    # Construct summary log path based on CSV path
-    # Assuming CSV is like: project_jX_mem_pss_psutil_timestamp.csv
-    # Summary log is:      project_jX_mem_pss_psutil_timestamp_summary.log
-    # So, csv_filepath.stem might be "project_jX_mem_pss_psutil_timestamp"
-    # And summary log is f"{csv_filepath.stem}_summary.log" - this seems correct.
-
+    if csv_filepath.name.endswith("_summary.log"):
+        return None  # Do not process summary logs themselves for a primary metric
     summary_log_path = csv_filepath.parent / f"{csv_filepath.stem}_summary.log"
-
     if not summary_log_path.exists():
         logger.warning(
             f"Could not find summary log: {summary_log_path} to determine primary metric. Falling back to RSS_KB."
         )
-        return "RSS_KB"  # Fallback, or could be None to raise error
-
+        return "RSS_KB"
     try:
         with open(summary_log_path, "r") as f:
             for line in f:
-                # Try to get from "Peak Overall Memory (METRIC_KB): ..."
                 match_peak = re.search(r"Peak Overall Memory \(([^)]+)\):", line)
                 if match_peak:
                     metric = match_peak.group(1)
@@ -50,16 +43,15 @@ def _get_primary_metric_from_summary_log(csv_filepath: Path) -> Optional[str]:
                         f"Determined primary metric '{metric}' from summary log (peak line)."
                     )
                     return metric
-                # Fallback: Try to get from "Memory Metric: COLLECTOR_TYPE"
                 match_collector = re.search(r"Memory Metric: (\w+)", line)
                 if match_collector:
                     collector_type_short = match_collector.group(1).lower()
-                    if "pss" in collector_type_short:  # PSS_PSUTIL
+                    if "pss" in collector_type_short:
                         logger.info(
                             f"Determined primary metric 'PSS_KB' from summary log (collector type line: {collector_type_short})."
                         )
                         return "PSS_KB"
-                    elif "rss" in collector_type_short:  # RSS_PIDSTAT
+                    elif "rss" in collector_type_short:
                         logger.info(
                             f"Determined primary metric 'RSS_KB' from summary log (collector type line: {collector_type_short})."
                         )
@@ -68,174 +60,223 @@ def _get_primary_metric_from_summary_log(csv_filepath: Path) -> Optional[str]:
         logger.error(
             f"Error reading or parsing summary log {summary_log_path}: {e}. Falling back to RSS_KB."
         )
+    return "RSS_KB"  # Default fallback
 
-    return "RSS_KB"  # Default fallback if not found
 
-
-def _generate_line_plot(
-    df: pd.DataFrame,
+def _generate_line_plot_plotly(
+    df_plot_data: pl.DataFrame,
     primary_metric_col: str,
     resample_interval_str: str,
     csv_filepath: Path,
     output_dir: Path,
 ):
-    """Generates and saves a line plot for memory usage using the primary_metric_col."""
-    fig, ax = plt.subplots(figsize=(18, 10))
-    all_categories_empty_after_resample = True
-    category_resampled_data = {}
+    """
+    Generates and saves an interactive line plot using Plotly.
 
-    for category, group_data in df.groupby("Category"):
-        if group_data.empty or primary_metric_col not in group_data.columns:
+    The plot shows the average of the primary metric over time for each category,
+    resampled to the specified interval. A 'Total' line representing the sum
+    of these averages across categories is also added.
+
+    Args:
+        df_plot_data: Polars DataFrame containing the data to plot.
+                      Expected columns: "Timestamp", "Category", and primary_metric_col.
+        primary_metric_col: Name of the column containing the primary metric data.
+        resample_interval_str: Polars interval string (e.g., "1s", "5m") for resampling.
+        csv_filepath: Path to the original CSV file (used for naming the output).
+        output_dir: Directory where the generated HTML plot file will be saved.
+    """
+    if df_plot_data.is_empty():
+        logger.warning(
+            f"Line Plot: Input data is empty for {csv_filepath.name}. Skipping."
+        )
+        return
+
+    # Resample data for each category
+    resampled_dfs_list = []
+    for category_name_tuple, group_df in df_plot_data.group_by(
+        "Category", maintain_order=True
+    ):
+        category_name = category_name_tuple[0]  # group_by returns a tuple for the key
+        if group_df.is_empty():
             continue
 
-        group_data_indexed = group_data.set_index("Timestamp")
-        # Resample the primary metric
-        resampled_metric = (
-            group_data_indexed[primary_metric_col]
-            .resample(resample_interval_str)
-            .mean()
-        )
-        resampled_metric = resampled_metric.ffill(limit=2)
-
-        if not resampled_metric.empty and not resampled_metric.isnull().all():
-            all_categories_empty_after_resample = False
-            ax.plot(
-                resampled_metric.index,
-                resampled_metric.values,
-                label=category,
-                marker=".",
-                linestyle="-",
-                markersize=5,
-                linewidth=1.5,
+        resampled_cat_df = (
+            group_df.sort("Timestamp")
+            .group_by_dynamic(
+                index_column="Timestamp",
+                every=resample_interval_str,
+                group_by="Category",
             )
-            category_resampled_data[category] = resampled_metric
-
-    if (
-        all_categories_empty_after_resample and not category_resampled_data
-    ):  # Check if any data was plotted
-        logger.warning(
-            f"Line Plot: All categories in {csv_filepath.name} resulted in empty or all-NaN data for metric '{primary_metric_col}' after resampling to {resample_interval_str}. Skipping line plot."
+            .agg(pl.col(primary_metric_col).mean().alias(primary_metric_col))
+            .fill_null(0)  # Fill NaNs that can result from resampling sparse data
         )
-        plt.close(fig)
+        if not resampled_cat_df.is_empty():
+            resampled_dfs_list.append(resampled_cat_df)
+
+    if not resampled_dfs_list:
+        logger.warning(
+            f"Line Plot: No data after resampling for {csv_filepath.name}. Skipping."
+        )
         return
 
-    # Calculate and plot Total line if there's data
-    if category_resampled_data:
-        # Combine all resampled category data into a DataFrame, sum across categories for each timestamp
-        combined_df = pd.DataFrame(category_resampled_data)
-        total_resampled = combined_df.sum(axis=1)  # Sum across columns (categories)
-        if not total_resampled.empty and not total_resampled.isnull().all():
-            ax.plot(
-                total_resampled.index,
-                total_resampled.values,
-                label="Total (Sum of Categories)",
-                color="black",
-                linestyle="--",
-                linewidth=2,
+    combined_resampled_df = pl.concat(resampled_dfs_list)
+
+    if combined_resampled_df.is_empty():
+        logger.warning(
+            f"Line Plot: Combined resampled data is empty for {csv_filepath.name}. Skipping."
+        )
+        return
+
+    fig = px.line(
+        combined_resampled_df.to_pandas(),  # Plotly Express often prefers Pandas DataFrame
+        x="Timestamp",
+        y=primary_metric_col,
+        color="Category",  # Creates different lines for each category
+        title=f"Memory Usage Over Time ({primary_metric_col} - Lines) - {csv_filepath.stem}<br>Resample: {resample_interval_str}",
+        labels={
+            "Timestamp": f"Time (Resampled to {resample_interval_str})",
+            primary_metric_col: f"Average {primary_metric_col} (KB)",
+        },
+        markers=True,
+    )
+
+    # Calculate and add Total line (sum of the *means* of categories at each resampled point)
+    total_df = (
+        combined_resampled_df.group_by("Timestamp")
+        .agg(pl.col(primary_metric_col).sum().alias("Total_Memory"))
+        .sort("Timestamp")
+    )
+
+    if not total_df.is_empty():
+        fig.add_trace(
+            go.Scatter(
+                x=total_df["Timestamp"].to_list(),
+                y=total_df["Total_Memory"].to_list(),
+                mode="lines",
+                name="Total (Sum of Categories)",
+                line=dict(color="black", dash="dash"),
             )
+        )
 
-    ax.set_xlabel(f"Time (Resampled to {resample_interval_str} intervals)")
-    ax.set_ylabel(f"Average {primary_metric_col} Memory Usage (KB)")
-    ax.set_title(
-        f"Memory Usage Over Time ({primary_metric_col} - Lines) - {csv_filepath.stem}\nResample: {resample_interval_str}",
-        fontsize=14,
+    fig.update_layout(
+        legend_title_text="Category",
+        xaxis_title=f"Time (Resampled to {resample_interval_str} intervals)",
+        yaxis_title=f"Average {primary_metric_col} Memory Usage (KB)",
     )
 
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
-    fig.autofmt_xdate(rotation=30, ha="right")
-
-    ax.legend(
-        loc="upper left", bbox_to_anchor=(1.02, 1), borderaxespad=0.0, fontsize="small"
+    plot_filename_html = (
+        output_dir / f"{csv_filepath.stem}_{primary_metric_col}_lines_plot.html"
     )
-    ax.grid(True, linestyle="--", alpha=0.7)
+    try:
+        fig.write_html(plot_filename_html)
+        logger.info(
+            f"Interactive memory usage line plot saved to: {plot_filename_html}"
+        )
+        # If you need PNG and have kaleido installed:
+        plot_filename_png = output_dir / f"{csv_filepath.stem}_{primary_metric_col}_lines_plot.png"
+        fig.write_image(plot_filename_png, width=1200, height=600)
+        logger.info(f"Static memory usage line plot saved to: {plot_filename_png}")
+    except Exception as e:
+        logger.error(
+            f"Failed to save line plot {plot_filename_html} using Plotly: {e}",
+            exc_info=True,
+        )
 
-    plt.subplots_adjust(
-        left=0.08, right=0.75, top=0.92, bottom=0.15
-    )  # Adjusted right for potentially longer legend
-    plot_filename = (
-        output_dir / f"{csv_filepath.stem}_{primary_metric_col}_lines_plot.png"
-    )
-    plt.savefig(plot_filename, bbox_inches="tight")
-    logger.info(f"Memory usage line plot saved to: {plot_filename}")
-    plt.close(fig)
 
-
-def _generate_stacked_area_plot(
-    df: pd.DataFrame,
+def _generate_stacked_area_plot_plotly(
+    df_plot_data: pl.DataFrame,
     primary_metric_col: str,
     resample_interval_str: str,
     csv_filepath: Path,
     output_dir: Path,
 ):
-    """Generates and saves a stacked area plot for memory usage using the primary_metric_col."""
-    if df.empty or primary_metric_col not in df.columns:
+    """
+    Generates and saves an interactive stacked area plot using Plotly.
+
+    The plot shows the mean of the primary metric for each category, stacked
+    over time, after resampling to the specified interval.
+
+    Args:
+        df_plot_data: Polars DataFrame containing the data to plot.
+                      Expected columns: "Timestamp", "Category", and primary_metric_col.
+        primary_metric_col: Name of the column containing the primary metric data.
+        resample_interval_str: Polars interval string (e.g., "1s", "5m") for resampling.
+        csv_filepath: Path to the original CSV file (used for naming the output).
+        output_dir: Directory where the generated HTML plot file will be saved.
+    """
+    if df_plot_data.is_empty():
         logger.warning(
-            f"Stacked Plot: No data or primary metric '{primary_metric_col}' to plot for {csv_filepath.name}. Skipping stacked plot."
+            f"Stacked Plot: Input data is empty for {csv_filepath.name}. Skipping."
         )
         return
 
-    # Pivot table: Timestamp as index, Category as columns, mean of primary_metric_col as values
-    pivot_df = (
-        df.groupby(
-            [pd.Grouper(key="Timestamp", freq=resample_interval_str), "Category"]
-        )[primary_metric_col]
-        .mean()
-        .unstack(fill_value=0)
+    # Resample data, taking the mean for each category within each interval
+    resampled_df = (
+        df_plot_data.sort("Timestamp")
+        .group_by_dynamic(
+            index_column="Timestamp",
+            every=resample_interval_str,
+            group_by="Category",  # Group by category for separate lines/areas before stacking
+        )
+        .agg(pl.col(primary_metric_col).mean().fill_null(0).alias(primary_metric_col))
     )
 
-    if pivot_df.empty or pivot_df.shape[1] == 0:
+    if resampled_df.is_empty():
         logger.warning(
-            f"Stacked Plot: Pivoted data is empty for {csv_filepath.name} (metric: {primary_metric_col}) after resampling to {resample_interval_str}. Skipping stacked plot."
+            f"Stacked Plot: Resampled data is empty for {csv_filepath.name}. Skipping."
         )
         return
 
-    pivot_df[pivot_df < 0] = 0  # Ensure all values are non-negative
+    fig = px.area(
+        resampled_df.to_pandas(),  # Plotly Express often prefers Pandas DataFrame
+        x="Timestamp",
+        y=primary_metric_col,
+        color="Category",  # Stacks by this column
+        title=f"Memory Usage Over Time ({primary_metric_col} - Stacked Area) - {csv_filepath.stem}<br>Resample: {resample_interval_str}",
+        labels={
+            "Timestamp": f"Time (Resampled to {resample_interval_str})",
+            primary_metric_col: f"{primary_metric_col} (KB)",
+        },
+        # groupnorm='percent' # Uncomment for 100% stacked area chart
+    )
 
-    fig, ax = plt.subplots(figsize=(18, 10))
+    fig.update_layout(
+        legend_title_text="Category",
+        xaxis_title=f"Time (Resampled to {resample_interval_str} intervals)",
+        yaxis_title=f"Total {primary_metric_col} Memory Usage (KB) - Stacked",
+    )
 
+    plot_filename_html = (
+        output_dir / f"{csv_filepath.stem}_{primary_metric_col}_stacked_plot.html"
+    )
     try:
-        ax.stackplot(
-            pivot_df.index,
-            pivot_df.T.values,
-            labels=pivot_df.columns.tolist(),
-            alpha=0.8,
+        fig.write_html(plot_filename_html)
+        logger.info(
+            f"Interactive memory usage stacked area plot saved to: {plot_filename_html}"
         )
+        # If you need PNG and have kaleido installed:
+        plot_filename_png = output_dir / f"{csv_filepath.stem}_{primary_metric_col}_stacked_plot.png"
+        fig.write_image(plot_filename_png, width=1200, height=600)
+        logger.info(f"Static memory usage stacked plot saved to: {plot_filename_png}")
     except Exception as e:
         logger.error(
-            f"Error during stackplot generation for {csv_filepath.name}: {e}. Data shape: {pivot_df.shape}",
+            f"Failed to save stacked area plot {plot_filename_html} using Plotly: {e}",
             exc_info=True,
         )
-        plt.close(fig)
-        return
-
-    ax.set_xlabel(f"Time (Resampled to {resample_interval_str} intervals)")
-    ax.set_ylabel(f"Total {primary_metric_col} Memory Usage (KB) - Stacked")
-    ax.set_title(
-        f"Memory Usage Over Time ({primary_metric_col} - Stacked Area) - {csv_filepath.stem}\nResample: {resample_interval_str}",
-        fontsize=14,
-    )
-
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
-    fig.autofmt_xdate(rotation=30, ha="right")
-
-    ax.legend(
-        loc="upper left", bbox_to_anchor=(1.02, 1), borderaxespad=0.0, fontsize="small"
-    )
-    ax.grid(True, linestyle=":", alpha=0.5)
-
-    plt.subplots_adjust(left=0.08, right=0.75, top=0.92, bottom=0.15)  # Adjusted right
-    plot_filename = (
-        output_dir / f"{csv_filepath.stem}_{primary_metric_col}_stacked_plot.png"
-    )
-    plt.savefig(plot_filename, bbox_inches="tight")
-    logger.info(f"Memory usage stacked area plot saved to: {plot_filename}")
-    plt.close(fig)
 
 
 def plot_memory_usage_from_csv(csv_filepath: Path, output_dir: Path):
     """
     Reads memory usage data from a CSV file and generates time-series plots.
-    It determines the primary metric from the associated _summary.log file.
+
+    This function processes a CSV file containing memory metrics, determines the
+    primary metric to plot (e.g., RSS_KB, PSS_KB) by consulting an associated
+    summary log file, filters and preprocesses the data, and then generates
+    both line and stacked area plots of memory usage over time.
+
+    Args:
+        csv_filepath: Path to the input CSV file.
+        output_dir: Directory where the generated HTML plot files will be saved.
     """
     if not csv_filepath.exists():
         logger.error(f"CSV file not found: {csv_filepath}")
@@ -249,192 +290,184 @@ def plot_memory_usage_from_csv(csv_filepath: Path, output_dir: Path):
         return
 
     try:
-        # Read the CSV. The CSV contains per-process data AND summary lines (CATEGORY_SUM, ALL_SUM).
-        # We need to filter for per-process data.
-        # Per-process lines have more columns than summary lines.
-        # A robust way is to check the number of columns or the type of the second column.
-        # For simplicity, we'll assume summary lines can be identified if the 'PID' column (expected in per-process) is NaN or missing.
-        # Or, more directly, filter out rows where the second column is 'CATEGORY_SUM' or 'ALL_SUM'.
-
-        # Read all lines first to determine column names for per-process data
-        # The header of the CSV corresponds to per-process data.
-        with open(csv_filepath, "r") as f:
-            header_line = f.readline().strip()
-        if not header_line:
-            logger.warning(
-                f"CSV file {csv_filepath} is empty or has no header. Skipping plot."
-            )
-            return
-
-        all_csv_columns = header_line.split(",")
-
-        # Read the CSV, expecting the header to define columns for per-process data
-        df = pd.read_csv(
-            csv_filepath, comment="#"
-        )  # comment='#' is fine, summary log has no comments
-        logger.info(f"Successfully read CSV: {csv_filepath} with {len(df)} rows.")
-
-        if df.empty:
-            logger.warning(
-                f"No data found in {csv_filepath} after initial read. Skipping plot."
-            )
-            return
-
-        # Filter out summary rows ('CATEGORY_SUM', 'ALL_SUM') based on the second column's value.
-        # The second column in per-process data is 'Category'. For summary rows, it's 'CATEGORY_SUM' or 'ALL_SUM'.
-        # Let's assume the second column from the header is 'Category' for per-process data.
-        # If the CSV structure is Timestamp_epoch, Type_Marker/Category, ...
-        # The `monitor_utils.py` writes the Type_Marker ('CATEGORY_SUM', 'ALL_SUM') into the second column for these rows.
-        # For actual data rows, the second column is the actual category name.
-
-        # Identify per-process data rows. These rows should NOT have 'CATEGORY_SUM' or 'ALL_SUM' in their second column.
-        # The second column name in the header is 'Category'.
-        if "Category" not in df.columns:  # Should be the second column from header
-            logger.error(
-                f"CSV file {csv_filepath.name} does not have the expected 'Category' (second) column in its header. Columns: {df.columns.tolist()}"
-            )
-            return
-
-        # Filter out rows that are summary rows
-        df_per_process = df[
-            ~df.iloc[:, 1].isin(["CATEGORY_SUM", "ALL_SUM"])
-        ].copy()  # Use .iloc[:,1] for second column by position
-
-        if df_per_process.empty:
-            logger.warning(
-                f"No per-process data rows found in {csv_filepath.name} after filtering summary rows. Skipping plot."
-            )
-            return
-
-        logger.info(
-            f"Found {len(df_per_process)} per-process data rows in {csv_filepath.name}."
+        # Read CSV with Polars
+        # infer_schema_length is set to a higher value to improve type inference for larger files.
+        # try_parse_dates is False as we handle epoch conversion manually.
+        df_pl = pl.read_csv(
+            csv_filepath, infer_schema_length=10000, try_parse_dates=False
         )
+        logger.info(
+            f"Successfully read CSV with Polars: {csv_filepath} with {df_pl.height} rows."
+        )
+
+        if df_pl.is_empty():
+            logger.warning(
+                f"No data found in {csv_filepath} after Polars read. Skipping plot."
+            )
+            return
+
+        # Filter out summary rows (e.g., 'CATEGORY_SUM', 'ALL_SUM').
+        # These rows are typically used for summary statistics and not for per-process plotting.
+        # The second column is assumed to contain category information or these summary markers.
+        second_col_name = df_pl.columns[1]
+        df_per_process_pl = df_pl.filter(
+            ~pl.col(second_col_name).is_in(["CATEGORY_SUM", "ALL_SUM"])
+        )
+
+        if df_per_process_pl.is_empty():
+            logger.warning(
+                f"No per-process data rows in {csv_filepath.name} (Polars). Skipping."
+            )
+            return
+
+        logger.info(f"Found {df_per_process_pl.height} per-process data rows (Polars).")
 
         required_cols = ["Timestamp_epoch", "Category", primary_metric_col]
-        if not all(col in df_per_process.columns for col in required_cols):
+        if not all(col in df_per_process_pl.columns for col in required_cols):
+            missing_cols = [
+                col for col in required_cols if col not in df_per_process_pl.columns
+            ]
             logger.error(
-                f"Per-process data in {csv_filepath} is missing one or more required columns for plotting: {required_cols}. Found: {df_per_process.columns.tolist()}"
+                f"Per-process data in {csv_filepath} missing required columns: {missing_cols}. Found: {df_per_process_pl.columns}"
             )
             return
 
-        # Ensure primary_metric_col is numeric, coercing errors to NaN
-        df_per_process[primary_metric_col] = pd.to_numeric(
-            df_per_process[primary_metric_col], errors="coerce"
-        )
-        df_per_process.dropna(
-            subset=[primary_metric_col], inplace=True
-        )  # Drop rows where primary metric is NaN after coercion
+        # Ensure primary_metric_col is numeric, coercing errors to null, then filter out nulls.
+        df_per_process_pl = df_per_process_pl.with_columns(
+            pl.col(primary_metric_col).cast(
+                pl.Float64, strict=False
+            )  # strict=False converts errors to null
+        ).filter(pl.col(primary_metric_col).is_not_null())
 
-        if df_per_process.empty:
+        if df_per_process_pl.is_empty():
             logger.warning(
-                f"No valid numeric data for primary metric '{primary_metric_col}' in {csv_filepath.name}. Skipping plot."
+                f"No valid numeric data for '{primary_metric_col}' in {csv_filepath.name} (Polars). Skipping."
             )
             return
 
-        # 1. Reclassify old categories (for compatibility with older CSVs) - applied to df_per_process
+        # Reclassify categories based on a predefined map.
         reclassification_map = {
             "py_decodetree": "script_python",
             "py_qapi_gen": "script_python",
         }
-        df_per_process["Category"] = df_per_process["Category"].replace(
-            reclassification_map
+        df_per_process_pl = df_per_process_pl.with_columns(
+            pl.col("Category").map_dict(
+                reclassification_map, default=pl.col("Category")
+            )
         )
 
-        df_per_process = df_per_process[
-            ~df_per_process["Category"].str.startswith("ignore_")
-        ]
-        if df_per_process.empty:
+        # Filter out categories that are marked to be ignored.
+        df_per_process_pl = df_per_process_pl.filter(
+            ~pl.col("Category").str.starts_with("ignore_")
+        )
+        if df_per_process_pl.is_empty():
             logger.warning(
-                f"No data left after filtering ignored categories in {csv_filepath}. Skipping plot."
+                f"No data after filtering ignored categories (Polars). Skipping."
             )
             return
 
-        # 2. Filter categories with total primary_metric < MIN_TOTAL_PRIMARY_METRIC_KB_FOR_PLOT
-        category_total_metric = df_per_process.groupby("Category")[
-            primary_metric_col
-        ].sum()
-        significant_categories = category_total_metric[
-            category_total_metric >= MIN_TOTAL_PRIMARY_METRIC_KB_FOR_PLOT
-        ].index.tolist()
+        # Filter categories based on a minimum total sum of the primary metric.
+        # This helps in focusing plots on categories with significant memory usage.
+        category_total_metric_pl = df_per_process_pl.group_by("Category").agg(
+            pl.col(primary_metric_col).sum().alias("total_metric")
+        )
+        significant_categories_df = category_total_metric_pl.filter(
+            pl.col("total_metric") >= MIN_TOTAL_PRIMARY_METRIC_KB_FOR_PLOT
+        )
+        significant_categories = significant_categories_df["Category"].to_list()
 
         if not significant_categories:
             logger.warning(
-                f"No categories with total {primary_metric_col} >= {MIN_TOTAL_PRIMARY_METRIC_KB_FOR_PLOT}KB found in {csv_filepath.name}. Skipping plots."
+                f"No significant categories found (Polars) for {csv_filepath.name} with metric {primary_metric_col} (threshold: {MIN_TOTAL_PRIMARY_METRIC_KB_FOR_PLOT} KB). Skipping plots."
             )
             return
 
-        df_plot_data = df_per_process[
-            df_per_process["Category"].isin(significant_categories)
-        ].copy()  # Use .copy()
+        df_plot_data_pl = df_per_process_pl.filter(
+            pl.col("Category").is_in(significant_categories)
+        )
         logger.info(
-            f"Plotting for significant categories in {csv_filepath.name} (metric: {primary_metric_col}): {significant_categories}"
+            f"Plotting for significant categories in {csv_filepath.name} (Polars, metric: {primary_metric_col}): {significant_categories}"
         )
 
-        df_plot_data["Timestamp"] = pd.to_datetime(
-            df_plot_data["Timestamp_epoch"], unit="s"
+        # Convert 'Timestamp_epoch' (seconds since epoch) to Polars Datetime type.
+        df_plot_data_pl = df_plot_data_pl.with_columns(
+            pl.from_epoch("Timestamp_epoch", time_unit="s").alias("Timestamp")
         )
 
-        if df_plot_data.empty or len(df_plot_data["Timestamp"]) < 1:
+        if (
+            df_plot_data_pl.is_empty()
+            or df_plot_data_pl.select(pl.col("Timestamp").count().alias("c"))["c"][0]
+            < 1
+        ):
             logger.warning(
-                f"Not enough data points in {csv_filepath.name} after filtering to determine duration or plot. Skipping."
+                f"Not enough data points in {csv_filepath.name} after filtering (Polars). Skipping."
             )
             return
 
-        min_time = df_plot_data["Timestamp"].min()
-        max_time = df_plot_data["Timestamp"].max()
-        duration_seconds = (
-            (max_time - min_time).total_seconds()
-            if pd.notna(min_time)
-            and pd.notna(max_time)
-            and len(df_plot_data["Timestamp"]) > 1
-            else 0
-        )
+        min_time_dt: Optional[datetime] = df_plot_data_pl["Timestamp"].min()
+        max_time_dt: Optional[datetime] = df_plot_data_pl["Timestamp"].max()
 
+        duration_seconds = 0.0
+        if (
+            min_time_dt and max_time_dt and df_plot_data_pl.height > 1
+        ):  # Need at least two points to have a duration
+            duration_seconds = (max_time_dt - min_time_dt).total_seconds()
+
+        # Determine resample interval string for Polars based on total duration.
+        # This aims to create a reasonable number of points on the plot.
         if duration_seconds <= 10:
-            resample_interval_str = "1S"
-        elif duration_seconds < 60:
-            resample_interval_str = "5S"
-        elif duration_seconds < 300:
-            resample_interval_str = "10S"
-        elif duration_seconds < 900:
-            resample_interval_str = "30S"
-        elif duration_seconds < 3600:
-            resample_interval_str = "1T"
-        elif duration_seconds < 3 * 3600:
-            resample_interval_str = "2T"
-        else:
-            resample_interval_str = "5T"
+            resample_interval_str_polars = "1s"
+        elif duration_seconds < 60:  # up to 1 min
+            resample_interval_str_polars = "5s"
+        elif duration_seconds < 300:  # up to 5 mins
+            resample_interval_str_polars = "10s"
+        elif duration_seconds < 900:  # up to 15 mins
+            resample_interval_str_polars = "30s"
+        elif duration_seconds < 3600:  # up to 1 hour
+            resample_interval_str_polars = "1m"
+        elif duration_seconds < 3 * 3600:  # up to 3 hours
+            resample_interval_str_polars = "2m"
+        else:  # more than 3 hours
+            resample_interval_str_polars = "5m"
         logger.info(
-            f"Data duration for {csv_filepath.name}: {duration_seconds:.0f}s. Dynamic resample interval: {resample_interval_str}"
+            f"Data duration for {csv_filepath.name}: {duration_seconds:.0f}s. Polars resample interval: {resample_interval_str_polars}"
         )
 
-        _generate_line_plot(
-            df_plot_data.copy(),
+        _generate_line_plot_plotly(
+            df_plot_data_pl,
             primary_metric_col,
-            resample_interval_str,
+            resample_interval_str_polars,
             csv_filepath,
             output_dir,
         )
-        _generate_stacked_area_plot(
-            df_plot_data.copy(),
+        _generate_stacked_area_plot_plotly(
+            df_plot_data_pl,
             primary_metric_col,
-            resample_interval_str,
+            resample_interval_str_polars,
             csv_filepath,
             output_dir,
         )
 
-    except pd.errors.EmptyDataError:
+    except pl.exceptions.NoDataError:
         logger.warning(
-            f"No data or columns to parse in {csv_filepath} (Pandas EmptyDataError). Skipping plot."
+            f"No data in {csv_filepath} (Polars NoDataError). Skipping plot."
         )
     except Exception as e:
-        logger.error(f"Error generating plots for {csv_filepath}: {e}", exc_info=True)
+        logger.error(
+            f"Error generating plots for {csv_filepath} with Polars/Plotly: {e}",
+            exc_info=True,
+        )
 
 
 def generate_plots_for_logs(log_dir: Path):
     """
-    Generates plots for all .csv files in the specified log directory.
-    Plots will be saved in the same directory as the CSV files.
+    Generates plots for all relevant .csv files in the specified log directory.
+
+    It iterates through CSV files, skipping summary log files, and calls
+    `plot_memory_usage_from_csv` for each data CSV.
+
+    Args:
+        log_dir: The directory containing the CSV log files.
     """
     logger.info(f"Searching for CSV log files in: {log_dir} to generate plots.")
     csv_files = list(log_dir.glob("*.csv"))
@@ -444,13 +477,15 @@ def generate_plots_for_logs(log_dir: Path):
         return
 
     for csv_file in csv_files:
-        # Ensure we are not trying to plot a summary log file itself if it ends with .csv by mistake
-        if "_summary.log" in csv_file.name:  # A bit of a heuristic
+        # Avoid processing summary logs directly as data files for plotting
+        if (
+            "_summary.log" in csv_file.name
+        ):  # More robust check might be needed if naming changes
             logger.info(
                 f"Skipping potential summary log file from plotting: {csv_file.name}"
             )
             continue
-        logger.info(f"--- Generating plot for {csv_file.name} ---")
+        logger.info(
+            f"--- Generating plot for {csv_file.name} (using Polars & Plotly) ---"
+        )
         plot_memory_usage_from_csv(csv_file, log_dir)
-
-    # Removed the extraneous plotting code that was here previously
