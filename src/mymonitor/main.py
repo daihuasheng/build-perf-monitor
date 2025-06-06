@@ -11,6 +11,7 @@ The script uses pidstat or psutil for resource monitoring.
 """
 
 import argparse
+import json
 import logging
 import signal
 import sys
@@ -33,41 +34,6 @@ DEFAULT_PARALLELISM_LEVELS: List[str] = ["4", "8", "16"]
 """Default parallelism levels to use if not specified by the user."""
 
 
-# --- Project Configurations ---
-# (Similar to PROJECTS_CONFIG in Bash)
-PROJECTS_CONFIG: List[Dict[str, Any]] = [
-    {
-        "NAME": "qemu",
-        "DIR": "/host/qemu/build",  # <<< MODIFY AS NEEDED
-        "SETUP_COMMAND_TEMPLATE": "",
-        "BUILD_COMMAND_TEMPLATE": "make -j<N>",
-        "PROCESS_PATTERN": r"make|qemu.*|gcc|cc|g\+\+|c\+\+|clang|as|ld|cc1|collect2|configure|python[0-9._-]*",
-        "CLEAN_COMMAND_TEMPLATE": "make clean",
-    },
-    {
-        "NAME": "aosp",
-        "DIR": "/host/aosp",  # <<< MODIFY AS NEEDED
-        "SETUP_COMMAND_TEMPLATE": "source build/envsetup.sh && lunch aosp_arm64-userdebug",  # <<< MODIFY TARGET
-        "BUILD_COMMAND_TEMPLATE": "m -j<N>",
-        "PROCESS_PATTERN": r"make|soong_ui|soong_build|ninja|kati|javac|aapt[2]?|d8|r8|metalava|clang[^\s-]*|ld\.lld|lld|gcc|cc|g\+\+|c\+\+|python[0-9._-]*|bpfmt|aidl|hidl-gen|dex2oat|zip|rsync",
-        "CLEAN_COMMAND_TEMPLATE": "m clean",
-    },
-    {
-        "NAME": "chromium",
-        "DIR": "/host/chromium/src",  # <<< MODIFY AS NEEDED
-        "SETUP_COMMAND_TEMPLATE": "",  # "gn gen out/Default" - usually done once
-        "BUILD_COMMAND_TEMPLATE": "autoninja -C out/Default chrome -j<N>",  # <<< MODIFY out/Default
-        "PROCESS_PATTERN": r"ninja|gn|clang[^\s-]*|gomacc|siso|ld\.lld|lld|python[0-9._-]*|mojo[a-z_]*|lcc|ar|ranlib|strip",
-        "CLEAN_COMMAND_TEMPLATE": "gn clean out/Default",  # <<< MODIFY out/Default
-    },
-]
-"""
-List of project configurations. Each configuration is a dictionary defining
-how to build, clean, and monitor a specific project.
-<N> in command templates is replaced with the parallelism level.
-'PROCESS_PATTERN' is a regex used to identify relevant processes for monitoring.
-"""
-
 # --- Logging Setup ---
 logging.basicConfig(
     level=logging.INFO,
@@ -80,14 +46,27 @@ try:
     # Resolve project root directory based on this file's location.
     PROJECT_ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 except NameError:
-    # Fallback if __file__ is not defined (e.g., in some interactive environments).
-    PROJECT_ROOT_DIR = Path.cwd()
-    logger.warning(
-        "__file__ not defined, using current working directory as project root for logs."
-    )
+    # Fallback for environments where __file__ might not be defined (e.g. some REPLs)
+    PROJECT_ROOT_DIR = Path(".").resolve()
 
 LOG_ROOT_DIR = PROJECT_ROOT_DIR / "logs"
-"""Root directory for storing all log files and generated plots."""
+CONFIG_FILE_PATH = PROJECT_ROOT_DIR / "projects_config.json"  # Define config file path
+
+
+def load_projects_config(config_path: Path) -> List[Dict[str, Any]]:
+    """Loads project configurations from a JSON file."""
+    if not config_path.exists():
+        logger.error(f"Configuration file not found: {config_path}")
+        sys.exit(1)
+    try:
+        with open(config_path, "r") as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        logger.error(f"Error decoding JSON from {config_path}: {e}")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Error loading configuration from {config_path}: {e}")
+        sys.exit(1)
 
 
 def signal_handler(sig: int, frame: Any) -> None:
@@ -114,6 +93,8 @@ def main_cli() -> None:
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
+
+    projects_config = load_projects_config(CONFIG_FILE_PATH)
 
     parser = argparse.ArgumentParser(description="Build Memory Profiler")
     parser.add_argument(
@@ -214,12 +195,12 @@ def main_cli() -> None:
 
     projects_to_run: List[Dict[str, Any]] = []
     if not selected_project_names:  # Run all if none specified
-        projects_to_run = PROJECTS_CONFIG
-        logger.info(f"Processing all {len(PROJECTS_CONFIG)} configured projects.")
+        projects_to_run = projects_config  # Use loaded config
+        logger.info(f"Processing all {len(projects_config)} configured projects.")
     else:
         for proj_name in selected_project_names:
             found_project = next(
-                (p for p in PROJECTS_CONFIG if p["NAME"] == proj_name), None
+                (p for p in projects_config if p["NAME"] == proj_name), None # Use loaded config
             )
             if found_project:
                 projects_to_run.append(found_project)

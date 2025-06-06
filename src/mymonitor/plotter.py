@@ -351,9 +351,12 @@ def plot_memory_usage_from_csv(csv_filepath: Path, output_dir: Path):
             "py_qapi_gen": "script_python",
         }
         df_per_process_pl = df_per_process_pl.with_columns(
-            pl.col("Category").map_dict(
-                reclassification_map, default=pl.col("Category")
-            )
+            pl.col("Category")
+              .replace(
+                reclassification_map,
+                default=pl.col("Category")
+              )
+              .alias("Category")
         )
 
         # Filter out categories that are marked to be ignored.

@@ -1,0 +1,26 @@
+[
+  {
+    "NAME": "qemu",
+    "DIR": "/host/qemu/build",
+    "SETUP_COMMAND_TEMPLATE": "",
+    "BUILD_COMMAND_TEMPLATE": "make -j<N>",
+    "PROCESS_PATTERN": "make|qemu.*|gcc|cc|g\\+\\+|c\\+\\+|clang|as|ld|cc1|collect2|configure|python[0-9._-]*",
+    "CLEAN_COMMAND_TEMPLATE": "make clean"
+  },
+  {
+    "NAME": "aosp",
+    "DIR": "/host/aosp",
+    "SETUP_COMMAND_TEMPLATE": "source build/envsetup.sh && lunch aosp_arm64-userdebug",
+    "BUILD_COMMAND_TEMPLATE": "m -j<N>",
+    "PROCESS_PATTERN": "make|soong_ui|soong_build|ninja|kati|javac|aapt[2]?|d8|r8|metalava|clang[^\\s-]*|ld\\.lld|lld|gcc|cc|g\\+\\+|c\\+\\+|python[0-9._-]*|bpfmt|aidl|hidl-gen|dex2oat|zip|rsync",
+    "CLEAN_COMMAND_TEMPLATE": "m clean"
+  },
+  {
+    "NAME": "chromium",
+    "DIR": "/host/chromium/src",
+    "SETUP_COMMAND_TEMPLATE": "",
+    "BUILD_COMMAND_TEMPLATE": "autoninja -C out/Default chrome -j<N>",
+    "PROCESS_PATTERN": "ninja|gn|clang[^\\s-]*|gomacc|siso|ld\\.lld|lld|python[0-9._-]*|mojo[a-z_]*|lcc|ar|ranlib|strip",
+    "CLEAN_COMMAND_TEMPLATE": "gn clean out/Default"
+  }
+]

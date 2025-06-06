@@ -336,7 +336,11 @@ def run_and_monitor_build(
         log_dir / f"{base_filename_part}_collector_aux.log"
     )  # Generic name
 
-    actual_build_command = build_command_template.replace("<N>", str(parallelism_level))
+    base_build_cmd = build_command_template.replace("<N>", str(parallelism_level))
+    if setup_command_template:
+        actual_build_command = f"{setup_command_template} && {base_build_cmd}"
+    else:
+        actual_build_command = base_build_cmd
 
     # --- Initial Logging to Summary Log File and Console ---
     summary_log_header_content: List[str] = []  # Explicitly type the list
@@ -456,40 +460,20 @@ def run_and_monitor_build(
             logger.info(f"{cmd_desc} command completed successfully.")
         return exit_code
 
-    # Execute setup command if defined.
-    if setup_command_template:
-        # Setup commands, especially with 'source', often require a shell.
-        _use_shell_for_setup = True
-        _setup_cmd_to_run = setup_command_template
-        # Handle 'source' for shell environment setup by wrapping with 'bash -c'.
-        if (
-            "source " in setup_command_template
-            or "&&" in setup_command_template
-            or ";" in setup_command_template
-        ):
-            # Using '.' (alias for source) in bash -c for proper sourcing.
-            _setup_cmd_to_run = (
-                f"bash -c '. {setup_command_template}'"
-                if "source " in setup_command_template
-                else f"bash -c '{setup_command_template}'"
-            )
-
-        _run_and_log_command_to_summary(
-            _setup_cmd_to_run,
-            "Setup",
-            project_dir,
-            _use_shell_for_setup,  # Always True for setup commands needing shell context
-            output_summary_log_file,
-        )
-
     # Execute clean command if defined.
     if clean_command_template:
+        # For projects with setup commands (like AOSP), clean also needs setup
+        if setup_command_template:
+            actual_clean_command = f"{setup_command_template} && {clean_command_template}"
+        else:
+            actual_clean_command = clean_command_template
+        
         _run_and_log_command_to_summary(
-            clean_command_template,
+            actual_clean_command,
             "Clean",
             project_dir,
             True,
-            output_summary_log_file,  # Clean commands often need shell
+            output_summary_log_file,
         )
 
     # --- Build Monitoring ---
@@ -523,7 +507,6 @@ def run_and_monitor_build(
             f_summary.write(f"Build Start Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
 
         start_time_seconds = time.time()
-        # Execute build command using 'bash -c' to handle complex commands/pipelines correctly.
         build_cmd_to_run_shell = f"bash -c '{actual_build_command}'"
         current_build_proc = subprocess.Popen(
             build_cmd_to_run_shell,
