@@ -223,7 +223,7 @@ def get_process_category(cmd_name: str, cmd_full: str) -> str:
     return f"other_{cmd_name}"
 
 
-def run_command(command: str, cwd: Path, shell: bool = False) -> Tuple[int, str, str]:
+def run_command(command: str, cwd: Path, shell: bool = False, executable_shell: Optional[str] = None) -> Tuple[int, str, str]:
     """
     Executes a given shell command and returns its exit code, stdout, and stderr.
 
@@ -231,9 +231,7 @@ def run_command(command: str, cwd: Path, shell: bool = False) -> Tuple[int, str,
         command: The command string to execute.
         cwd: The working directory in which to run the command.
         shell: If True, the command is executed through the shell.
-               Set to True if the command includes shell features like pipes or wildcards.
-               Defaults to False, where the command is treated as a list of arguments
-               if it's not a single executable.
+        executable_shell: Path to the shell to use if `shell` is True. Defaults to system default (usually /bin/sh).
 
     Returns:
         A tuple containing:
@@ -242,6 +240,8 @@ def run_command(command: str, cwd: Path, shell: bool = False) -> Tuple[int, str,
             - stderr (str): The standard error of the command.
     """
     logger.info(f"Executing command in {cwd}: {command}")
+    if shell and executable_shell:
+        logger.info(f"Using shell: {executable_shell}")
     try:
         # If shell is False, command should ideally be a list.
         # subprocess.run handles string command as program name if shell=False.
@@ -254,6 +254,7 @@ def run_command(command: str, cwd: Path, shell: bool = False) -> Tuple[int, str,
             capture_output=True,
             text=True,  # Decodes stdout/stderr as text
             shell=shell,
+            executable=executable_shell if shell else None, # Specify the shell if provided
             check=False,  # Do not raise CalledProcessError, handle returncode manually
         )
         if process.returncode != 0:
@@ -431,9 +432,12 @@ def run_and_monitor_build(
         cwd_path: Path,
         shell_bool: bool,
         summary_file: Path,
+        executable_shell: Optional[str] = None, # Added executable_shell parameter
     ) -> int:
         """Runs a command and logs its execution details to the summary file."""
         logger.info(f"Executing {cmd_desc} command: {cmd_str} in {cwd_path}")
+        if shell_bool and executable_shell:
+            logger.info(f"Using shell for {cmd_desc}: {executable_shell}")
         with open(summary_file, "a") as f_s:
             f_s.write(f"\n--- {cmd_desc} Command ---\n")
             f_s.write(f"Command: {cmd_str}\n")
@@ -441,7 +445,7 @@ def run_and_monitor_build(
             f_s.write(f"Execution Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
 
         exit_code, stdout_val, stderr_val = run_command(
-            cmd_str, cwd=cwd_path, shell=shell_bool
+            cmd_str, cwd=cwd_path, shell=shell_bool, executable_shell=executable_shell # Pass executable_shell
         )
 
         with open(summary_file, "a") as f_s:
@@ -463,17 +467,21 @@ def run_and_monitor_build(
     # Execute clean command if defined.
     if clean_command_template:
         # For projects with setup commands (like AOSP), clean also needs setup
+        executable_for_clean: Optional[str] = None
         if setup_command_template:
             actual_clean_command = f"{setup_command_template} && {clean_command_template}"
+            executable_for_clean = "/bin/bash" # AOSP commands need bash
         else:
             actual_clean_command = clean_command_template
+            # For simple commands, default shell is fine, or could also be /bin/bash if preferred
         
         _run_and_log_command_to_summary(
             actual_clean_command,
             "Clean",
             project_dir,
-            True,
+            True, # shell_bool is True for these complex commands
             output_summary_log_file,
+            executable_shell=executable_for_clean, # Pass the determined shell
         )
 
     # --- Build Monitoring ---
