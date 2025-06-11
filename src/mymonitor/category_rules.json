@@ -1,0 +1,318 @@
+[
+  {
+    "category": "ignore_vscode_server",
+    "priority": 1000,
+    "match_field": "orig_cmd_full",
+    "match_type": "contains",
+    "pattern": ".vscode-server",
+    "comment": "Ignore VS Code server processes."
+  },
+  {
+    "category": "build_system_bazel_server",
+    "priority": 200,
+    "match_field": "current_cmd_full",
+    "match_type": "regex",
+    "pattern": "java.*Bazel.*(A-server\\.jar|server\\.jar)",
+    "comment": "Matches Bazel server Java processes."
+  },
+  {
+    "category": "build_system_gradle",
+    "priority": 195,
+    "match_field": "current_cmd_full",
+    "match_type": "regex",
+    "pattern": "java.*gradle",
+    "comment": "Matches Gradle Java processes."
+  },
+  {
+    "category": "build_system_ninja",
+    "priority": 190,
+    "match_field": "current_cmd_name",
+    "match_type": "exact",
+    "pattern": "ninja",
+    "comment": "Ninja build system."
+  },
+  {
+    "category": "build_system_make",
+    "priority": 185,
+    "match_field": "current_cmd_name",
+    "match_type": "in_list",
+    "patterns": [
+      "make",
+      "gmake"
+    ],
+    "comment": "Make or gmake. Note: gomake (part of gomacc) should be handled by a more specific gomacc rule if needed."
+  },
+  {
+    "category": "build_system_kati",
+    "priority": 180,
+    "match_field": "current_cmd_name",
+    "match_type": "in_list",
+    "patterns": [
+      "kati",
+      "ckati"
+    ],
+    "comment": "Kati or ckati (Soong's make)."
+  },
+  {
+    "category": "build_system_soong_ui",
+    "priority": 175,
+    "match_field": "current_cmd_name",
+    "match_type": "in_list",
+    "patterns": [
+      "soong_ui",
+      "soong_ui.bash"
+    ],
+    "comment": "Soong UI."
+  },
+  {
+    "category": "build_system_soong_build",
+    "priority": 170,
+    "match_field": "current_cmd_name",
+    "match_type": "exact",
+    "pattern": "soong_build",
+    "comment": "Soong build process itself."
+  },
+  {
+    "category": "build_system_bazel_client",
+    "priority": 165,
+    "match_field": "current_cmd_name",
+    "match_type": "exact",
+    "pattern": "bazel",
+    "comment": "Bazel client. Assumes Bazel server is caught by a higher priority rule."
+  },
+  {
+    "category": "build_system_gomacc",
+    "priority": 160,
+    "match_field": "current_cmd_name",
+    "match_type": "exact",
+    "pattern": "gomacc",
+    "comment": "Goma C/C++ compiler."
+  },
+  {
+    "category": "build_system_siso",
+    "priority": 155,
+    "match_field": "current_cmd_name",
+    "match_type": "exact",
+    "pattern": "siso",
+    "comment": "Siso build system (Chromium)."
+  },
+  {
+    "category": "utility_os",
+    "priority": 150,
+    "match_field": "current_cmd_name",
+    "match_type": "in_list",
+    "patterns": [
+      "mkdir",
+      "rm",
+      "cp",
+      "mv",
+      "cat",
+      "sed",
+      "echo",
+      "touch",
+      "ln",
+      "find",
+      "grep",
+      "awk",
+      "tr",
+      "sort",
+      "uniq",
+      "head",
+      "tail",
+      "basename",
+      "dirname",
+      "readlink",
+      "stat",
+      "chmod",
+      "chown",
+      "expr",
+      "sleep",
+      "date",
+      "unzip",
+      "xz",
+      "tar",
+      "gzip",
+      "bzip2",
+      "patch"
+    ],
+    "comment": "Common OS utility commands. 'test' is handled separately."
+  },
+  {
+    "category": "utility_os",
+    "priority": 149,
+    "match_field": "current_cmd_name",
+    "match_type": "exact",
+    "pattern": "test",
+    "comment": "OS 'test' command. Go tests using 'test' should be caught by a more specific 'test_go' rule if needed or handled by its pattern."
+  },
+  {
+    "category": "compile_c_cpp",
+    "priority": 100,
+    "match_field": "current_cmd_name",
+    "match_type": "in_list",
+    "patterns": [
+      "cc1",
+      "cc1plus"
+    ],
+    "comment": "Direct C/C++ compiler executables."
+  },
+  {
+    "category": "compile_c_cpp",
+    "priority": 99,
+    "match_field": "current_cmd_full",
+    "match_type": "regex",
+    "pattern": "^(?:.*/)?(?:gcc|g\\+\\+|clang|clang\\+\\+|cc)\\b.*\\s-c(\\s|$)",
+    "comment": "Compiler drivers (gcc, clang, etc.) with '-c' flag for compilation."
+  },
+  {
+    "category": "link",
+    "priority": 90,
+    "match_field": "current_cmd_name",
+    "match_type": "in_list",
+    "patterns": [
+      "ld",
+      "collect2",
+      "lld",
+      "ld.lld"
+    ],
+    "comment": "Direct linker calls."
+  },
+  {
+    "category": "link",
+    "priority": 89,
+    "match_field": "current_cmd_full",
+    "match_type": "regex",
+    "pattern": "^(?:.*/)?(?:gcc|g\\+\\+|clang|clang\\+\\+|cc)\\b(?!.*\\s-c(\\s|$)).*\\s-o\\s",
+    "comment": "Compiler drivers used for linking (no '-c', has '-o')."
+  },
+  {
+    "category": "assemble",
+    "priority": 80,
+    "match_field": "current_cmd_name",
+    "match_type": "exact",
+    "pattern": "as",
+    "comment": "Assembler."
+  },
+  {
+    "category": "script_java",
+    "priority": 70,
+    "match_field": "current_cmd_name",
+    "match_type": "exact",
+    "pattern": "java",
+    "comment": "General Java processes. Specific Java-based build tools like Bazel server are caught by higher priority rules."
+  },
+  {
+    "category": "script_java",
+    "priority": 69,
+    "match_field": "current_cmd_full",
+    "match_type": "regex",
+    "pattern": "(?:^|/)java\\b",
+    "comment": "Catches java if it's a path like /usr/bin/java, if not already caught by cmd_name 'java'."
+  },
+  {
+    "category": "script_python",
+    "priority": 60,
+    "match_field": "current_cmd_name",
+    "match_type": "startswith",
+    "pattern": "python",
+    "comment": "Python scripts (e.g., python, python3, python3.10)."
+  },
+  {
+    "category": "script_python",
+    "priority": 59,
+    "match_field": "current_cmd_name",
+    "match_type": "exact",
+    "pattern": "py3-launcher",
+    "comment": "Python 3 launcher."
+  },
+  {
+    "category": "script_shell",
+    "priority": 50,
+    "match_field": "current_cmd_name",
+    "match_type": "endswith",
+    "pattern": ".sh",
+    "comment": "Shell scripts ending with .sh."
+  },
+  {
+    "category": "script_shell_interactive_or_file",
+    "priority": 49,
+    "match_field": "current_cmd_name",
+    "match_type": "in_list",
+    "patterns": [
+      "sh",
+      "bash"
+    ],
+    "comment": "This rule is for 'sh script.prog' or 'bash script.prog' or interactive. 'sh -c' is unwrapped. Python code ensures this isn't applied if it was an sh -c call."
+  },
+  {
+    "category": "android_tool_resource",
+    "priority": 40,
+    "match_field": "current_cmd_name",
+    "match_type": "in_list",
+    "patterns": [
+      "aapt",
+      "aapt2"
+    ],
+    "comment": "Android Asset Packaging Tool."
+  },
+  {
+    "category": "compile_rust",
+    "priority": 30,
+    "match_field": "current_cmd_name",
+    "match_type": "exact",
+    "pattern": "rustc",
+    "comment": "Rust compiler."
+  },
+  {
+    "category": "archive_tool_ar",
+    "priority": 20,
+    "match_field": "current_cmd_name",
+    "match_type": "in_list",
+    "patterns": [
+      "ar",
+      "llvm-ar"
+    ],
+    "comment": "Archiver tool (ar, llvm-ar)."
+  },
+  {
+    "category": "archive_tool_zip",
+    "priority": 19,
+    "match_field": "current_cmd_name",
+    "match_type": "in_list",
+    "patterns": [
+      "zip",
+      "jar",
+      "soong_zip",
+      "zip2zip",
+      "zipsync"
+    ],
+    "comment": "ZIP and JAR related tools."
+  },
+  {
+    "category": "tool_strip",
+    "priority": 18,
+    "match_field": "current_cmd_name",
+    "match_type": "exact",
+    "pattern": "strip",
+    "comment": "Symbol stripping tool."
+  },
+  {
+    "category": "tool_objcopy",
+    "priority": 17,
+    "match_field": "current_cmd_name",
+    "match_type": "in_list",
+    "patterns": [
+      "objcopy",
+      "llvm-objcopy"
+    ],
+    "comment": "Object copying and manipulation tool."
+  },
+  {
+    "category": "test_go",
+    "priority": 10,
+    "match_field": "orig_cmd_full",
+    "match_type": "regex",
+    "pattern": "gotestrunner|(_test/.*\\s-test\\.|\\.test(\\s|$))",
+    "comment": "This catches gotestrunner or typical Go test binary executions."
+  }
+]

@@ -17,6 +17,7 @@ import re
 import subprocess
 import time
 import threading
+import json
 from pathlib import Path
 from typing import (
     Dict,
@@ -41,6 +42,31 @@ current_build_proc: Optional[subprocess.Popen] = None
 
 active_memory_collector: Optional[AbstractMemoryCollector] = None
 """Global variable for the currently active memory collector instance. Used for cleanup."""
+
+_CATEGORY_RULES: Optional[List[Dict[str, Any]]] = None
+_RULES_FILE_PATH = Path(__file__).resolve().parent / "category_rules.json"
+
+
+def _load_category_rules() -> List[Dict[str, Any]]:
+    """Loads and caches category rules from the JSON file, sorted by priority."""
+    global _CATEGORY_RULES
+    if _CATEGORY_RULES is None:
+        try:
+            with open(_RULES_FILE_PATH, 'r') as f:
+                rules_data = json.load(f)
+            # Sort by priority (descending), then by original order for tie-breaking (implicit)
+            _CATEGORY_RULES = sorted(rules_data, key=lambda r: r.get("priority", 0), reverse=True)
+            logger.info(f"Successfully loaded {len(_CATEGORY_RULES)} category rules from {_RULES_FILE_PATH}")
+        except FileNotFoundError:
+            logger.error(f"Category rules file not found: {_RULES_FILE_PATH}")
+            _CATEGORY_RULES = []
+        except json.JSONDecodeError as e:
+            logger.error(f"Error decoding JSON from {_RULES_FILE_PATH}: {e}")
+            _CATEGORY_RULES = []
+        except Exception as e:
+            logger.error(f"Failed to load category rules from {_RULES_FILE_PATH}: {e}", exc_info=True)
+            _CATEGORY_RULES = [] # Default to empty list on error
+    return _CATEGORY_RULES
 
 
 def _stream_output(pipe: Optional[IO[str]], prefix: str) -> None:
@@ -77,150 +103,116 @@ def _stream_output(pipe: Optional[IO[str]], prefix: str) -> None:
 
 def get_process_category(cmd_name: str, cmd_full: str) -> str:
     """
-    Categorizes a process based on its command name and full command line.
-
-    This function attempts to identify the role of a process in a build system
-    (e.g., compiler, linker, build tool) using a set of predefined rules and
-    regular expressions. It also tries to unwrap commands executed via 'sh -c'
-    or 'bash -c' to get to the actual underlying command.
-
-    Args:
-        cmd_name: The base name of the command (e.g., "gcc", "make").
-        cmd_full: The full command line string with arguments.
-
-    Returns:
-        A string representing the determined category (e.g., "compile_c_cpp", "link").
-        If no specific category is matched, it returns "other_<cmd_name>".
+    Categorizes a process based on its command name and full command line
+    using rules defined in category_rules.json.
     """
-    # Filter out vscode-server processes early as they are usually not part of the build.
-    if ".vscode-server" in cmd_full:
-        return "ignore_vscode_server"
+    rules = _load_category_rules()
 
     orig_cmd_name = cmd_name
     orig_cmd_full = cmd_full
+    
+    unwrapped_cmd_name = orig_cmd_name
+    unwrapped_cmd_full = orig_cmd_full
+    was_sh_bash_c_call = False # Flag to track if unwrapping occurred
 
-    # Attempt to unwrap commands executed via sh -c "..." or bash -c "..."
-    # This helps in identifying the actual command being run.
-    sh_bash_pattern = r"^(?:.*/)?(sh|bash)$"
+    # --- Attempt to unwrap commands executed via sh -c "..." or bash -c "..." ---
     sh_bash_c_pattern = r"^(?:.*/)?(sh|bash)\s+-c\s+"
+    is_sh_bash_c_match = re.match(sh_bash_c_pattern, orig_cmd_full)
 
-    if (
-        orig_cmd_name == "sh"
-        or orig_cmd_name == "bash"
-        or re.search(sh_bash_pattern, orig_cmd_name)
-    ) and re.search(sh_bash_c_pattern, orig_cmd_full):
-        # Extract the command string after 'sh -c ' or 'bash -c '.
-        temp_unwrapped_cmd = re.sub(sh_bash_c_pattern, "", orig_cmd_full, 1)
-
-        # Remove surrounding quotes if present.
-        if (
-            temp_unwrapped_cmd.startswith('"') and temp_unwrapped_cmd.endswith('"')
-        ) or (temp_unwrapped_cmd.startswith("'") and temp_unwrapped_cmd.endswith("'")):
-            temp_unwrapped_cmd = temp_unwrapped_cmd[1:-1]
-
-        if temp_unwrapped_cmd:
-            cmd_full = temp_unwrapped_cmd
-            parts = cmd_full.split(maxsplit=1)
-            new_cmd_name_full = parts[0]
-            # Update cmd_name to the basename of the unwrapped command.
-            cmd_name = os.path.basename(new_cmd_name_full)
-
-    # --- Classification rules operate on potentially unwrapped cmd_name and cmd_full ---
-    # cmd_name is now the basename of the (potentially unwrapped) command.
-    # cmd_full is the (potentially unwrapped) full command string.
-
-    # C/C++ compilation (cc1, cc1plus, or compiler driver with -c option)
-    if (
-        cmd_name in ("cc1", "cc1plus")
-        or re.search(
-            r"(?:^|/)(cc1|cc1plus)\s", cmd_full
-        )  # Check if command starts with or is path to cc1/cc1plus
-        or (
-            (
-                cmd_name in ("gcc", "g++", "clang", "clang++", "cc")
-                or re.search(r"(?:^|/)(gcc|g\+\+|clang|clang\+\+|cc)\s", cmd_full)
-            )
-            and re.search(
-                r"\s-c(\s|$)", cmd_full
-            )  # Presence of '-c' flag indicates compilation
-        )
-    ):
-        return "compile_c_cpp"
-
-    # Linking (ld, lld, collect2, or compiler driver without -c and with -o option)
-    if (
-        cmd_name in ("ld", "lld", "collect2")
-        or re.search(r"(?:^|/)(ld|lld|collect2)\s", cmd_full)
-        or (
-            (
-                cmd_name in ("gcc", "g++", "clang", "clang++", "cc")
-                or re.search(r"(?:^|/)(gcc|g\+\+|clang|clang\+\+|cc)\s", cmd_full)
-            )
-            and not re.search(r"\s-c(\s|$)", cmd_full)  # Absence of '-c'
-            and re.search(r"\s-o\s", cmd_full)  # Presence of '-o' (output file)
-            and cmd_name
-            not in ("cc1", "cc1plus")  # Ensure it's not a compiler frontend
-        )
-    ):
-        return "link"
-
-    # Assembly
-    if cmd_name == "as" or re.search(r"(?:^|/)as\s", cmd_full):
-        return "assemble"
-
-    # Java compilation
-    if cmd_name == "javac" or re.search(r"(?:^|/)javac\s", cmd_full):
-        return "compile_java"
-
-    # Android Dexing/D8/R8 tools
-    if cmd_name in ("dx", "d8", "r8") or re.search(r"(?:^|/)(dx|d8|r8)\s", cmd_full):
-        return "dex_android"
-
-    # Build system processes (make, ninja, etc.)
-    build_systems = ["make", "ninja", "meson", "kati", "soong_ui", "siso", "gomacc"]
-    if cmd_name in build_systems or re.search(
-        r"(?:^|/)(" + "|".join(build_systems) + r")\s", cmd_full
-    ):
-        return (
-            f"build_system_{cmd_name}" if cmd_name in build_systems else "build_system"
+    if is_sh_bash_c_match:
+        was_sh_bash_c_call = True
+        command_part = orig_cmd_full[is_sh_bash_c_match.end():]
+        if (command_part.startswith('"') and command_part.endswith('"')) or \
+           (command_part.startswith("'") and command_part.endswith("'")):
+            command_part = command_part[1:-1]
+        
+        processed_command_part = re.sub(
+            r"^((?:export\s+)?[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|\"[^\"]*\"|[^\"'\s]+)\s+)*", 
+            "", 
+            command_part.strip()
         )
 
-    # Python scripts
-    if cmd_name.startswith("python") or re.search(
-        r"(?:^|/)python[0-9._-]*\s", cmd_full  # Matches python, python3, python3.8 etc.
-    ):
-        return "script_python"
+        if processed_command_part:
+            parts = processed_command_part.split(maxsplit=1)
+            if parts:
+                potential_new_cmd_name_full_path = parts[0]
+                if potential_new_cmd_name_full_path and not "=" in os.path.basename(potential_new_cmd_name_full_path):
+                    unwrapped_cmd_name = os.path.basename(potential_new_cmd_name_full_path)
+                    unwrapped_cmd_full = processed_command_part
+    
+    # --- Normalize .real suffix ---
+    current_cmd_name = unwrapped_cmd_name
+    if current_cmd_name.endswith(".real"):
+        current_cmd_name = current_cmd_name[:-5]
+    current_cmd_full = unwrapped_cmd_full # .real normalization only affects cmd_name for now
 
-    # Android resource processing (aapt, aapt2)
-    if cmd_name in ("aapt", "aapt2") or re.search(r"(?:^|/)(aapt2?)\s", cmd_full):
-        return "android_resource"
+    # --- Apply rules ---
+    for rule in rules:
+        category = rule.get("category")
+        match_field_key = rule.get("match_field")
+        match_type = rule.get("match_type")
+        pattern = rule.get("pattern")
+        patterns = rule.get("patterns")
 
-    # Android code generation tools (metalava, aidl, hidl-gen)
-    android_codegen_tools = ["metalava", "aidl", "hidl-gen"]
-    if cmd_name in android_codegen_tools or re.search(
-        r"(?:^|/)(" + "|".join(android_codegen_tools) + r")\s", cmd_full
-    ):
-        return "android_codegen"
+        if not category or not match_field_key or not match_type:
+            logger.warning(f"Skipping invalid rule: {rule}")
+            continue
 
-    # Chromium specific tools (gn, mojo)
-    chromium_tools = ["gn", "mojo"]  # Add more as identified
-    if cmd_name in chromium_tools or re.search(
-        r"(?:^|/)(" + "|".join(chromium_tools) + r")\s", cmd_full
-    ):
-        return (
-            f"chromium_tool_{cmd_name}"
-            if cmd_name in chromium_tools
-            else "chromium_tool"
-        )
+        target_value = None
+        if match_field_key == "current_cmd_name":
+            target_value = current_cmd_name
+        elif match_field_key == "current_cmd_full":
+            target_value = current_cmd_full
+        elif match_field_key == "orig_cmd_name":
+            target_value = orig_cmd_name
+        elif match_field_key == "orig_cmd_full":
+            target_value = orig_cmd_full
+        # Add unwrapped fields if needed by rules, e.g. "unwrapped_cmd_name"
+        elif match_field_key == "unwrapped_cmd_name":
+            target_value = unwrapped_cmd_name
+        elif match_field_key == "unwrapped_cmd_full":
+            target_value = unwrapped_cmd_full
+        else:
+            logger.warning(f"Unknown match_field '{match_field_key}' in rule: {rule}")
+            continue
+        
+        if target_value is None: # Should not happen if logic is correct
+            continue
 
-    # QEMU configure script
-    if (
-        cmd_name == "configure" or re.search(r"(?:^|/)configure\s", cmd_full)
-    ) and "qemu" in cmd_full:  # Check for 'qemu' in full command to be specific
-        return "qemu_configure"
+        match_found = False
+        if match_type == "exact":
+            if pattern is not None and target_value == pattern:
+                match_found = True
+        elif match_type == "contains":
+            if pattern is not None and pattern in target_value:
+                match_found = True
+        elif match_type == "startswith":
+            if pattern is not None and target_value.startswith(pattern):
+                match_found = True
+        elif match_type == "endswith":
+            if pattern is not None and target_value.endswith(pattern):
+                match_found = True
+        elif match_type == "regex":
+            if pattern is not None and re.search(pattern, target_value):
+                match_found = True
+        elif match_type == "in_list":
+            if patterns is not None and target_value in patterns:
+                match_found = True
+        else:
+            logger.warning(f"Unknown match_type '{match_type}' in rule: {rule}")
+            continue
+            
+        # Special handling for 'script_shell_interactive_or_file' to ensure it wasn't an sh -c call
+        # This is a bit of a hack; ideally, rule conditions would be more expressive.
+        if category == "script_shell_interactive_or_file" and was_sh_bash_c_call:
+            match_found = False # Do not apply this rule if the original call was sh -c
 
-    # Default category if no specific rule matches
-    return f"other_{cmd_name}"
+        if match_found:
+            return category
+
+    # --- Default category if no rule matches ---
+    safe_cmd_name_part = re.sub(r"[^a-zA-Z0-9_.-]", "_", current_cmd_name[:30])
+    return f"other_{safe_cmd_name_part}"
 
 
 def run_command(command: str, cwd: Path, shell: bool = False, executable_shell: Optional[str] = None) -> Tuple[int, str, str]:
