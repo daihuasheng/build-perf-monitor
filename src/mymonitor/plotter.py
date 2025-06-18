@@ -12,22 +12,24 @@ logger = logging.getLogger(__name__)
 MIN_TOTAL_PRIMARY_METRIC_KB_FOR_PLOT = 10240  # 10MB, will apply to the primary metric
 
 
-def _get_primary_metric_from_summary_log(csv_filepath: Path) -> Optional[str]:
+def _get_primary_metric_from_summary_log(
+    data_filepath: Path,
+) -> Optional[str]:  # Renamed arg
     """
     Parses the corresponding _summary.log file to find the primary metric used.
 
     Args:
-        csv_filepath: Path to the main CSV data file. The function will look
+        data_filepath: Path to the main data file (CSV or Parquet). The function will look
                       for a summary log file with a similar name.
 
     Returns:
         The primary metric string (e.g., "RSS_KB", "PSS_KB") if found,
         otherwise "RSS_KB" as a fallback or None if the input is a summary log.
     """
-    summary_log_filename = csv_filepath.stem + "_summary.log"
-    if csv_filepath.name.endswith("_summary.log"):
+    summary_log_filename = data_filepath.stem + "_summary.log"
+    if data_filepath.name.endswith("_summary.log"):
         return None  # Do not process summary logs themselves for a primary metric
-    summary_log_path = csv_filepath.parent / f"{csv_filepath.stem}_summary.log"
+    summary_log_path = data_filepath.parent / f"{data_filepath.stem}_summary.log"
     if not summary_log_path.exists():
         logger.warning(
             f"Could not find summary log: {summary_log_path} to determine primary metric. Falling back to RSS_KB."
@@ -63,11 +65,47 @@ def _get_primary_metric_from_summary_log(csv_filepath: Path) -> Optional[str]:
     return "RSS_KB"  # Default fallback
 
 
+def _save_plotly_figure(
+    fig: go.Figure,
+    base_filename: str,
+    output_dir: Path,
+):
+    """
+    Saves a Plotly figure to both HTML and PNG formats.
+
+    Args:
+        fig: The Plotly figure object to save.
+        base_filename: The base name for the output files (without extension).
+        output_dir: The directory to save the files in.
+    """
+    plot_filename_html = output_dir / f"{base_filename}.html"
+    try:
+        fig.write_html(plot_filename_html)
+        logger.info(
+            f"Interactive plot saved to: {plot_filename_html}"
+        )
+        # If you need PNG and have kaleido installed:
+        try:
+            plot_filename_png = output_dir / f"{base_filename}.png"
+            fig.write_image(plot_filename_png, width=1200, height=600)
+            logger.info(f"Static plot saved to: {plot_filename_png}")
+        except Exception as e_kaleido:
+            logger.warning(
+                f"Failed to save static plot to PNG (Kaleido might be missing or misconfigured): {e_kaleido}. "
+                f"To enable PNG export, install Kaleido: pip install kaleido or mymonitor[export]"
+            )
+    except Exception as e:
+        logger.error(
+            f"Failed to save plot {plot_filename_html} using Plotly: {e}",
+            exc_info=True,
+        )
+
+
 def _generate_line_plot_plotly(
     df_plot_data: pl.DataFrame,
     primary_metric_col: str,
     resample_interval_str: str,
-    csv_filepath: Path,
+    data_filepath: Path,
     output_dir: Path,
 ):
     """
@@ -82,12 +120,12 @@ def _generate_line_plot_plotly(
                       Expected columns: "Timestamp", "Category", and primary_metric_col.
         primary_metric_col: Name of the column containing the primary metric data.
         resample_interval_str: Polars interval string (e.g., "1s", "5m") for resampling.
-        csv_filepath: Path to the original CSV file (used for naming the output).
+        data_filepath: Path to the original CSV or Parquet file (used for naming the output).
         output_dir: Directory where the generated HTML plot file will be saved.
     """
     if df_plot_data.is_empty():
         logger.warning(
-            f"Line Plot: Input data is empty for {csv_filepath.name}. Skipping."
+            f"Line Plot: Input data is empty for {data_filepath.name}. Skipping."
         )
         return
 
@@ -115,7 +153,7 @@ def _generate_line_plot_plotly(
 
     if not resampled_dfs_list:
         logger.warning(
-            f"Line Plot: No data after resampling for {csv_filepath.name}. Skipping."
+            f"Line Plot: No data after resampling for {data_filepath.name}. Skipping."
         )
         return
 
@@ -123,7 +161,7 @@ def _generate_line_plot_plotly(
 
     if combined_resampled_df.is_empty():
         logger.warning(
-            f"Line Plot: Combined resampled data is empty for {csv_filepath.name}. Skipping."
+            f"Line Plot: Combined resampled data is empty for {data_filepath.name}. Skipping."
         )
         return
 
@@ -132,7 +170,7 @@ def _generate_line_plot_plotly(
         x="Timestamp",
         y=primary_metric_col,
         color="Category",  # Creates different lines for each category
-        title=f"Memory Usage Over Time ({primary_metric_col} - Lines) - {csv_filepath.stem}<br>Resample: {resample_interval_str}",
+        title=f"Memory Usage Over Time ({primary_metric_col} - Lines) - {data_filepath.stem}<br>Resample: {resample_interval_str}",
         labels={
             "Timestamp": f"Time (Resampled to {resample_interval_str})",
             primary_metric_col: f"Average {primary_metric_col} (KB)",
@@ -164,30 +202,16 @@ def _generate_line_plot_plotly(
         yaxis_title=f"Average {primary_metric_col} Memory Usage (KB)",
     )
 
-    plot_filename_html = (
-        output_dir / f"{csv_filepath.stem}_{primary_metric_col}_lines_plot.html"
-    )
-    try:
-        fig.write_html(plot_filename_html)
-        logger.info(
-            f"Interactive memory usage line plot saved to: {plot_filename_html}"
-        )
-        # If you need PNG and have kaleido installed:
-        plot_filename_png = output_dir / f"{csv_filepath.stem}_{primary_metric_col}_lines_plot.png"
-        fig.write_image(plot_filename_png, width=1200, height=600)
-        logger.info(f"Static memory usage line plot saved to: {plot_filename_png}")
-    except Exception as e:
-        logger.error(
-            f"Failed to save line plot {plot_filename_html} using Plotly: {e}",
-            exc_info=True,
-        )
+    # MODIFIED: Use the new helper function to save the plot
+    base_plot_filename = f"{data_filepath.stem}_{primary_metric_col}_lines_plot"
+    _save_plotly_figure(fig, base_plot_filename, output_dir)
 
 
 def _generate_stacked_area_plot_plotly(
     df_plot_data: pl.DataFrame,
     primary_metric_col: str,
     resample_interval_str: str,
-    csv_filepath: Path,
+    data_filepath: Path,
     output_dir: Path,
 ):
     """
@@ -201,12 +225,12 @@ def _generate_stacked_area_plot_plotly(
                       Expected columns: "Timestamp", "Category", and primary_metric_col.
         primary_metric_col: Name of the column containing the primary metric data.
         resample_interval_str: Polars interval string (e.g., "1s", "5m") for resampling.
-        csv_filepath: Path to the original CSV file (used for naming the output).
+        data_filepath: Path to the original CSV or Parquet file (used for naming the output).
         output_dir: Directory where the generated HTML plot file will be saved.
     """
     if df_plot_data.is_empty():
         logger.warning(
-            f"Stacked Plot: Input data is empty for {csv_filepath.name}. Skipping."
+            f"Stacked Plot: Input data is empty for {data_filepath.name}. Skipping."
         )
         return
 
@@ -223,7 +247,7 @@ def _generate_stacked_area_plot_plotly(
 
     if resampled_df.is_empty():
         logger.warning(
-            f"Stacked Plot: Resampled data is empty for {csv_filepath.name}. Skipping."
+            f"Stacked Plot: Resampled data is empty for {data_filepath.name}. Skipping."
         )
         return
 
@@ -232,7 +256,7 @@ def _generate_stacked_area_plot_plotly(
         x="Timestamp",
         y=primary_metric_col,
         color="Category",  # Stacks by this column
-        title=f"Memory Usage Over Time ({primary_metric_col} - Stacked Area) - {csv_filepath.stem}<br>Resample: {resample_interval_str}",
+        title=f"Memory Usage Over Time ({primary_metric_col} - Stacked Area) - {data_filepath.stem}<br>Resample: {resample_interval_str}",
         labels={
             "Timestamp": f"Time (Resampled to {resample_interval_str})",
             primary_metric_col: f"{primary_metric_col} (KB)",
@@ -246,81 +270,66 @@ def _generate_stacked_area_plot_plotly(
         yaxis_title=f"Total {primary_metric_col} Memory Usage (KB) - Stacked",
     )
 
-    plot_filename_html = (
-        output_dir / f"{csv_filepath.stem}_{primary_metric_col}_stacked_plot.html"
-    )
-    try:
-        fig.write_html(plot_filename_html)
-        logger.info(
-            f"Interactive memory usage stacked area plot saved to: {plot_filename_html}"
-        )
-        # If you need PNG and have kaleido installed:
-        plot_filename_png = output_dir / f"{csv_filepath.stem}_{primary_metric_col}_stacked_plot.png"
-        fig.write_image(plot_filename_png, width=1200, height=600)
-        logger.info(f"Static memory usage stacked plot saved to: {plot_filename_png}")
-    except Exception as e:
-        logger.error(
-            f"Failed to save stacked area plot {plot_filename_html} using Plotly: {e}",
-            exc_info=True,
-        )
+    # MODIFIED: Use the new helper function to save the plot
+    base_plot_filename = f"{data_filepath.stem}_{primary_metric_col}_stacked_plot"
+    _save_plotly_figure(fig, base_plot_filename, output_dir)
 
 
-def plot_memory_usage_from_csv(csv_filepath: Path, output_dir: Path):
+def plot_memory_usage_from_data_file(data_filepath: Path, output_dir: Path):  # RENAMED
     """
-    Reads memory usage data from a CSV file and generates time-series plots.
+    Reads memory usage data from a Parquet file and generates time-series plots.
 
-    This function processes a CSV file containing memory metrics, determines the
+    This function processes a Parquet file containing memory metrics, determines the
     primary metric to plot (e.g., RSS_KB, PSS_KB) by consulting an associated
     summary log file, filters and preprocesses the data, and then generates
     both line and stacked area plots of memory usage over time.
 
     Args:
-        csv_filepath: Path to the input CSV file.
+        data_filepath: Path to the input Parquet file.
         output_dir: Directory where the generated HTML plot files will be saved.
     """
-    if not csv_filepath.exists():
-        logger.error(f"CSV file not found: {csv_filepath}")
+    if not data_filepath.exists():
+        logger.error(f"Data file not found: {data_filepath}")  # CHANGED
         return
 
-    primary_metric_col = _get_primary_metric_from_summary_log(csv_filepath)
+    primary_metric_col = _get_primary_metric_from_summary_log(data_filepath)
     if not primary_metric_col:
         logger.error(
-            f"Could not determine primary metric for {csv_filepath.name}. Skipping plot generation."
+            f"Could not determine primary metric for {data_filepath.name}. Skipping plot generation."
         )
         return
 
     try:
-        # Read CSV with Polars
-        # infer_schema_length is set to a higher value to improve type inference for larger files.
-        # try_parse_dates is False as we handle epoch conversion manually.
-        df_pl = pl.read_csv(
-            csv_filepath, infer_schema_length=10000, try_parse_dates=False
-        )
+        # Read Parquet file with Polars
+        df_pl = pl.read_parquet(data_filepath)  # CHANGED
         logger.info(
-            f"Successfully read CSV with Polars: {csv_filepath} with {df_pl.height} rows."
+            f"Successfully read Parquet with Polars: {data_filepath} with {df_pl.height} rows."  # CHANGED
         )
 
         if df_pl.is_empty():
             logger.warning(
-                f"No data found in {csv_filepath} after Polars read. Skipping plot."
+                f"No data found in {data_filepath} after Polars read. Skipping plot."
             )
             return
 
-        # Filter out summary rows (e.g., 'CATEGORY_SUM', 'ALL_SUM').
-        # These rows are typically used for summary statistics and not for per-process plotting.
-        # The second column is assumed to contain category information or these summary markers.
-        second_col_name = df_pl.columns[1]
-        df_per_process_pl = df_pl.filter(
-            ~pl.col(second_col_name).is_in(["CATEGORY_SUM", "ALL_SUM"])
-        )
+        # Filter for per-process data rows using the 'Record_Type' column
+        df_per_process_pl = df_pl.filter(pl.col("Record_Type") == "PROCESS")  # CHANGED
 
         if df_per_process_pl.is_empty():
             logger.warning(
-                f"No per-process data rows in {csv_filepath.name} (Polars). Skipping."
+                f"No per-process data rows (Record_Type='PROCESS') in {data_filepath.name} (Polars). Skipping."
             )
             return
 
         logger.info(f"Found {df_per_process_pl.height} per-process data rows (Polars).")
+
+        # Create the 'Category' column for plotting from Major_Category and Minor_Category
+        # This 'Category' column will be used by subsequent plotting logic
+        df_per_process_pl = df_per_process_pl.with_columns(
+            (pl.col("Major_Category") + "_" + pl.col("Minor_Category")).alias(
+                "Category"
+            )
+        )
 
         required_cols = ["Timestamp_epoch", "Category", primary_metric_col]
         if not all(col in df_per_process_pl.columns for col in required_cols):
@@ -328,38 +337,35 @@ def plot_memory_usage_from_csv(csv_filepath: Path, output_dir: Path):
                 col for col in required_cols if col not in df_per_process_pl.columns
             ]
             logger.error(
-                f"Per-process data in {csv_filepath} missing required columns: {missing_cols}. Found: {df_per_process_pl.columns}"
+                f"Per-process data in {data_filepath} missing required columns for plotting: {missing_cols}. Available: {df_per_process_pl.columns}"
             )
             return
 
         # Ensure primary_metric_col is numeric, coercing errors to null, then filter out nulls.
+        # Parquet read might already give correct types if schema was good during write.
         df_per_process_pl = df_per_process_pl.with_columns(
-            pl.col(primary_metric_col).cast(
-                pl.Float64, strict=False
-            )  # strict=False converts errors to null
+            pl.col(primary_metric_col).cast(pl.Float64, strict=False)
         ).filter(pl.col(primary_metric_col).is_not_null())
 
         if df_per_process_pl.is_empty():
             logger.warning(
-                f"No valid numeric data for '{primary_metric_col}' in {csv_filepath.name} (Polars). Skipping."
+                f"No valid numeric data for '{primary_metric_col}' in {data_filepath.name} (Polars). Skipping."
             )
             return
 
-        # Reclassify categories based on a predefined map.
+        # Reclassify categories based on a predefined map (operates on the new 'Category' column)
         reclassification_map = {
-            "py_decodetree": "script_python",
-            "py_qapi_gen": "script_python",
+            # Example: "Scripting_Python" -> "script_python" if needed,
+            # or map specific Major_Minor combinations.
+            # For now, assume the map keys are designed for Major_Minor.
         }
         df_per_process_pl = df_per_process_pl.with_columns(
             pl.col("Category")
-              .replace(
-                reclassification_map,
-                default=pl.col("Category")
-              )
-              .alias("Category")
+            .replace(reclassification_map, default=pl.col("Category"))
+            .alias("Category")
         )
 
-        # Filter out categories that are marked to be ignored.
+        # Filter out categories that are marked to be ignored (operates on the new 'Category' column)
         df_per_process_pl = df_per_process_pl.filter(
             ~pl.col("Category").str.starts_with("ignore_")
         )
@@ -381,7 +387,7 @@ def plot_memory_usage_from_csv(csv_filepath: Path, output_dir: Path):
 
         if not significant_categories:
             logger.warning(
-                f"No significant categories found (Polars) for {csv_filepath.name} with metric {primary_metric_col} (threshold: {MIN_TOTAL_PRIMARY_METRIC_KB_FOR_PLOT} KB). Skipping plots."
+                f"No significant categories found (Polars) for {data_filepath.name} with metric {primary_metric_col} (threshold: {MIN_TOTAL_PRIMARY_METRIC_KB_FOR_PLOT} KB). Skipping plots."
             )
             return
 
@@ -389,7 +395,7 @@ def plot_memory_usage_from_csv(csv_filepath: Path, output_dir: Path):
             pl.col("Category").is_in(significant_categories)
         )
         logger.info(
-            f"Plotting for significant categories in {csv_filepath.name} (Polars, metric: {primary_metric_col}): {significant_categories}"
+            f"Plotting for significant categories in {data_filepath.name} (Polars, metric: {primary_metric_col}): {significant_categories}"
         )
 
         # Convert 'Timestamp_epoch' (seconds since epoch) to Polars Datetime type.
@@ -403,7 +409,7 @@ def plot_memory_usage_from_csv(csv_filepath: Path, output_dir: Path):
             < 1
         ):
             logger.warning(
-                f"Not enough data points in {csv_filepath.name} after filtering (Polars). Skipping."
+                f"Not enough data points in {data_filepath.name} after filtering (Polars). Skipping."
             )
             return
 
@@ -433,38 +439,38 @@ def plot_memory_usage_from_csv(csv_filepath: Path, output_dir: Path):
         else:  # more than 3 hours
             resample_interval_str_polars = "5m"
         logger.info(
-            f"Data duration for {csv_filepath.name}: {duration_seconds:.0f}s. Polars resample interval: {resample_interval_str_polars}"
+            f"Data duration for {data_filepath.name}: {duration_seconds:.0f}s. Polars resample interval: {resample_interval_str_polars}"
         )
 
         _generate_line_plot_plotly(
             df_plot_data_pl,
             primary_metric_col,
             resample_interval_str_polars,
-            csv_filepath,
+            data_filepath,  # CHANGED from csv_filepath
             output_dir,
         )
         _generate_stacked_area_plot_plotly(
             df_plot_data_pl,
             primary_metric_col,
             resample_interval_str_polars,
-            csv_filepath,
+            data_filepath,  # CHANGED from csv_filepath
             output_dir,
         )
 
     except pl.exceptions.NoDataError:
         logger.warning(
-            f"No data in {csv_filepath} (Polars NoDataError). Skipping plot."
+            f"No data in {data_filepath} (Polars NoDataError). Skipping plot."
         )
     except Exception as e:
         logger.error(
-            f"Error generating plots for {csv_filepath} with Polars/Plotly: {e}",
+            f"Error generating plots for {data_filepath} with Polars/Plotly: {e}",  # CHANGED
             exc_info=True,
         )
 
 
 def generate_plots_for_logs(log_dir: Path):
     """
-    Generates plots for all relevant .csv files in the specified log directory.
+    Generates plots for all relevant .parquet files in the specified log directory.
 
     It iterates through CSV files, skipping summary log files, and calls
     `plot_memory_usage_from_csv` for each data CSV.
@@ -472,23 +478,20 @@ def generate_plots_for_logs(log_dir: Path):
     Args:
         log_dir: The directory containing the CSV log files.
     """
-    logger.info(f"Searching for CSV log files in: {log_dir} to generate plots.")
-    csv_files = list(log_dir.glob("*.csv"))
+    logger.info(
+        f"Searching for Parquet data files in: {log_dir} to generate plots."
+    )  # CHANGED
+    parquet_files = list(log_dir.glob("*.parquet"))  # CHANGED
 
-    if not csv_files:
-        logger.info(f"No CSV log files found in {log_dir} to generate plots for.")
+    if not parquet_files:
+        logger.info(
+            f"No Parquet data files found in {log_dir} to generate plots for."
+        )  # CHANGED
         return
 
-    for csv_file in csv_files:
-        # Avoid processing summary logs directly as data files for plotting
-        if (
-            "_summary.log" in csv_file.name
-        ):  # More robust check might be needed if naming changes
-            logger.info(
-                f"Skipping potential summary log file from plotting: {csv_file.name}"
-            )
-            continue
+    for data_file in parquet_files:  # CHANGED
+        # Summary logs are separate and not Parquet, so no need to filter them here.
         logger.info(
-            f"--- Generating plot for {csv_file.name} (using Polars & Plotly) ---"
+            f"--- Generating plot for {data_file.name} (using Polars & Plotly) ---"
         )
-        plot_memory_usage_from_csv(csv_file, log_dir)
+        plot_memory_usage_from_data_file(data_file, log_dir)  # RENAMED and CHANGED

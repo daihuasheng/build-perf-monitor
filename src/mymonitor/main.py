@@ -13,17 +13,18 @@ The script uses pidstat or psutil for resource monitoring.
 import argparse
 import json
 import logging
+import psutil
 import signal
 import sys
 import time
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from .monitor_utils import (
     run_and_monitor_build,
-    check_pidstat_installed,
     cleanup_processes,
 )
+from .process_utils import check_pidstat_installed
 from .plotter import generate_plots_for_logs
 
 # --- Global Configuration ---
@@ -124,7 +125,75 @@ def main_cli() -> None:
         choices=["rss_pidstat", "pss_psutil"],
         help="Metric type of memory to be collected (e.g., rss_pidstat, pss_psutil).",
     )
+    parser.add_argument(
+        "--monitor-core",
+        type=int,
+        default=0,
+        help="CPU core ID to pin the monitor script (and pidstat if used) to. Set to -1 to disable pinning. Default: 0.",
+    )
+    parser.add_argument(
+        "--build-cores-policy",
+        type=str,
+        default="all_others",
+        choices=["all_others", "specific", "none"],
+        help="Policy for assigning CPU cores to the build process. "
+        "'all_others': Use all cores except monitor-core. "
+        "'specific': Use cores from --specific-build-cores. "
+        "'none': Do not set affinity for build processes. Default: all_others.",
+    )
+    parser.add_argument(
+        "--specific-build-cores",
+        type=str,
+        help="Comma-separated list or range of CPU cores for the build process "
+        '(e.g., "1-7" or "1,3,5-7") if --build-cores-policy is \'specific\'.',
+    )
     args = parser.parse_args()
+
+    # --- Pin main monitor script to a specific core ---
+    monitor_script_pinned_to_core_str = "Not Pinned"
+    actual_monitor_core_id: Optional[int] = None
+
+    if args.monitor_core >= 0:
+        actual_monitor_core_id = args.monitor_core
+        try:
+            current_process = psutil.Process()
+            available_cores_count = psutil.cpu_count()
+            if not (
+                available_cores_count
+                and 0 <= actual_monitor_core_id < available_cores_count
+            ):
+                logger.warning(
+                    f"Monitor core {actual_monitor_core_id} is invalid. "
+                    f"Available cores: 0-{available_cores_count - 1 if available_cores_count else 'N/A'}. "
+                    "Skipping pinning for monitor script."
+                )
+                actual_monitor_core_id = None  # Disable pinning if core is invalid
+            else:
+                current_affinity = current_process.cpu_affinity()
+                if (
+                    len(current_affinity) == 1
+                    and actual_monitor_core_id in current_affinity
+                ):
+                    logger.info(
+                        f"Monitor script is already pinned to CPU core {actual_monitor_core_id}."
+                    )
+                else:
+                    current_process.cpu_affinity([actual_monitor_core_id])
+                    logger.info(
+                        f"Successfully pinned monitor script to CPU core {actual_monitor_core_id}."
+                    )
+                monitor_script_pinned_to_core_str = str(actual_monitor_core_id)
+        except Exception as e:
+            logger.error(
+                f"Failed to pin monitor script to CPU core {actual_monitor_core_id}: {e}",
+                exc_info=True,
+            )
+            actual_monitor_core_id = None  # Disable pinning on error
+    else:
+        logger.info(
+            "Monitor script CPU pinning is disabled by user (monitor_core < 0)."
+        )
+        actual_monitor_core_id = None
 
     # Check dependencies for the selected collector
     if args.metric_type == "rss_pidstat":
@@ -136,14 +205,10 @@ def main_cli() -> None:
             sys.exit(1)
     elif args.metric_type == "pss_psutil":
         try:
-            import psutil  # Check if psutil can be imported
-
             logger.info(
                 f"Using psutil version {psutil.__version__} for PSS collection."
             )
-        except ImportError:
-            # Ideally, this should be caught by dependency management (e.g., pyproject.toml)
-            # However, a runtime check serves as a fallback.
+        except ImportError: # This case should ideally not be hit if psutil is a direct dependency
             logger.error(
                 "'psutil' library not found, 'pss_psutil' collector cannot be used. "
                 "Please install it (e.g., pip install psutil)."
@@ -200,7 +265,8 @@ def main_cli() -> None:
     else:
         for proj_name in selected_project_names:
             found_project = next(
-                (p for p in projects_config if p["NAME"] == proj_name), None # Use loaded config
+                (p for p in projects_config if p["NAME"] == proj_name),
+                None,  # Use loaded config
             )
             if found_project:
                 projects_to_run.append(found_project)
@@ -226,8 +292,13 @@ def main_cli() -> None:
                 project_config=project_config,
                 parallelism_level=level,
                 monitoring_interval=MONITORING_INTERVAL_SECONDS,
-                log_dir=current_run_output_dir,  # Pass the run-specific directory
-                collector_type=args.metric_type,  # Pass the selected collector type
+                log_dir=current_run_output_dir,
+                collector_type=args.metric_type,
+                # Pass CPU pinning parameters
+                monitor_core_id_for_collector_and_build_avoidance=actual_monitor_core_id,
+                build_cpu_cores_policy=args.build_cores_policy,
+                specific_build_cores_str=args.specific_build_cores,
+                monitor_script_pinned_to_core_info=monitor_script_pinned_to_core_str,
             )
         logger.info(f"<<< Finished processing for project: {project_config['NAME']}")
 

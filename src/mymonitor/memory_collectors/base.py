@@ -10,7 +10,7 @@ This module provides:
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List, Dict, Any, Iterable
+from typing import List, Dict, Any, Iterable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -61,10 +61,13 @@ class AbstractMemoryCollector(ABC):
         """
         self.process_pattern = process_pattern
         self.monitoring_interval = monitoring_interval
-        self.collector_kwargs = kwargs  # Store any additional arguments
+        self.collector_cpu_core: Optional[int] = kwargs.pop("collector_cpu_core", None)
+        self.taskset_available: bool = kwargs.pop("taskset_available", False)
+        self.collector_kwargs = kwargs
         logger.info(
             f"Initializing {self.__class__.__name__} with pattern: '{process_pattern}', "
-            f"interval: {monitoring_interval}s, extra_args: {kwargs}"
+            f"interval: {monitoring_interval}s, collector_cpu_core: {self.collector_cpu_core}, "
+            f"taskset_available: {self.taskset_available}, other_args: {self.collector_kwargs}"
         )
 
     @abstractmethod

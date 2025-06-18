@@ -86,12 +86,7 @@ class RssPidstatCollector(AbstractMemoryCollector):
         Raises:
             RuntimeError: If `pidstat` fails to start.
         """
-        # Construct the pidstat command.
-        # -r: Report memory statistics.
-        # -l: Display full command line.
-        # -C: Match processes whose command name contains the given string (regex).
-        # monitoring_interval: Interval for reporting.
-        pidstat_cmd: List[str] = [
+        pidstat_base_cmd: List[str] = [
             "pidstat",
             "-r",
             "-l",
@@ -99,7 +94,28 @@ class RssPidstatCollector(AbstractMemoryCollector):
             self.process_pattern,
             str(self.monitoring_interval),
         ]
-        # Set environment for pidstat to ensure consistent output format (e.g., decimal points).
+
+        pidstat_cmd_final: List[str] = []
+        pidstat_prefix_str = ""
+
+        if self.collector_cpu_core is not None and self.taskset_available:
+            try:
+                # Validate core ID against available cores if possible, though psutil might not be imported here.
+                # For simplicity, assume core ID is valid if provided.
+                pidstat_cmd_final.extend(
+                    ["taskset", "-c", str(self.collector_cpu_core)]
+                )
+                pidstat_prefix_str = f"taskset -c {self.collector_cpu_core} "
+                logger.info(
+                    f"Will attempt to pin pidstat to CPU core {self.collector_cpu_core} using taskset."
+                )
+            except Exception as e:  # Should not happen with simple string conversion
+                logger.warning(
+                    f"Could not form taskset prefix for pidstat: {e}. Pidstat will not be pinned."
+                )
+
+        pidstat_cmd_final.extend(pidstat_base_cmd)
+
         pidstat_env = os.environ.copy()
         pidstat_env["LC_ALL"] = "C"
 
@@ -121,17 +137,21 @@ class RssPidstatCollector(AbstractMemoryCollector):
             # If no specific file is provided, discard stderr to prevent pipe buffer issues.
             stderr_dest = subprocess.DEVNULL
 
-        logger.info(f"Starting pidstat collector with command: {' '.join(pidstat_cmd)}")
+        logger.info(
+            f"Starting pidstat collector with command: {' '.join(pidstat_cmd_final)}"
+        )
         try:
             self.pidstat_proc = subprocess.Popen(
-                pidstat_cmd,
+                pidstat_cmd_final,  # Use the potentially prefixed command
                 stdout=subprocess.PIPE,  # Capture stdout for parsing.
                 stderr=stderr_dest,  # Redirect stderr as configured.
                 text=True,  # Decode output as text.
                 bufsize=1,  # Line-buffered to get output as it comes.
                 env=pidstat_env,  # Use the modified environment.
             )
-            logger.info(f"pidstat process started (PID: {self.pidstat_proc.pid}).")
+            logger.info(
+                f"pidstat process started (PID: {self.pidstat_proc.pid}). Command: '{pidstat_prefix_str}{' '.join(pidstat_base_cmd)}'"
+            )
         except Exception as e:
             logger.error(f"Failed to start pidstat: {e}", exc_info=True)
             if self._pidstat_stderr_handle:
