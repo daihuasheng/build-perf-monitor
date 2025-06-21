@@ -1,29 +1,63 @@
 """
 Configuration loading and management for the MyMonitor application.
 
-This module loads settings from a central 'config.toml' file, validates them,
-and provides a typed configuration object for use throughout the application.
+This module is responsible for loading settings from a hierarchy of TOML files,
+validating them against data models, and providing a single, typed configuration
+object for use throughout the application.
+
+It employs a singleton pattern, ensuring that configuration files are read and
+parsed only once per application run. The main entry point for other modules
+is the `get_config()` function.
+
+The configuration structure is hierarchical:
+1. A main `config.toml` file defines global settings and points to other files.
+2. A `projects.toml` file defines the specific projects to be monitored.
+3. A `rules.toml` file defines the rules for process categorization.
 """
 
 import logging
 import tomllib
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
-# Import the data models from the central location
+# Import the data models from the central location to ensure type safety.
 from .data_models import AppConfig, MonitorConfig, ProjectConfig, RuleConfig
 
 logger = logging.getLogger(__name__)
 
 # --- Global Singleton for Configuration ---
 
+# This global variable will hold the single instance of the loaded AppConfig.
 _CONFIG: Optional[AppConfig] = None
+
+# Defines the default path to the main configuration file, relative to this script's location.
+# This can be programmatically overridden (e.g., in tests or by the CLI main.py)
+# to load a different configuration.
 _CONFIG_FILE_PATH = Path(__file__).parent.parent.parent / "conf" / "config.toml"
 
 
 def _load_config(config_path: Path) -> AppConfig:
     """
     Loads the main TOML configuration and any referenced sub-configuration files.
+
+    This is the internal workhorse function that performs the file I/O and parsing.
+    It reads the main config file, then uses the paths specified within it to
+    load the project and rule configurations. It populates the dataclasses defined
+    in `data_models.py` and returns a fully constructed `AppConfig` object.
+
+    Args:
+        config_path: The absolute path to the main `config.toml` file.
+
+    Returns:
+        A fully populated AppConfig object.
+
+    Raises:
+        FileNotFoundError: If the main config file or any referenced sub-config
+                           file does not exist.
+        KeyError: If a required key (like 'projects_config' or 'rules_config')
+                  is missing from the configuration.
+        tomllib.TOMLDecodeError: If any of the TOML files are malformed.
+        TypeError: If the data in the TOML files does not match the expected types.
     """
     logger.info(f"Loading main configuration from: {config_path}")
     if not config_path.exists():
@@ -34,7 +68,7 @@ def _load_config(config_path: Path) -> AppConfig:
         with open(config_path, "rb") as f:
             data = tomllib.load(f)
 
-        # --- Load Monitor Config (from main file) ---
+        # --- Load Monitor Config (from the main config file) ---
         monitor_data = data.get("monitor", {})
         monitor_config = MonitorConfig(
             interval_seconds=monitor_data.get("interval_seconds", 1),
@@ -49,6 +83,7 @@ def _load_config(config_path: Path) -> AppConfig:
 
         # --- Load Projects and Rules from referenced files ---
         paths_data = data.get("paths", {})
+        # The directory of the main config file is used as the base for relative paths.
         config_dir = config_path.parent
 
         # Load Projects
@@ -83,10 +118,15 @@ def _load_config(config_path: Path) -> AppConfig:
         logger.info(f"Loading rules from: {rules_path}")
         with open(rules_path, "rb") as f_rules:
             rules_data = tomllib.load(f_rules)
+        # Unpack each rule dictionary directly into the RuleConfig dataclass.
         rules_config = [RuleConfig(**r) for r in rules_data.get("rules", [])]
+        # Sort rules by priority in descending order. This is crucial for the
+        # classification logic to work correctly, as it ensures more specific
+        # rules are checked before more general ones.
         rules_config.sort(key=lambda r: r.priority, reverse=True)
         logger.info(f"Loaded and sorted {len(rules_config)} categorization rules.")
 
+        # Assemble the final, comprehensive configuration object.
         return AppConfig(
             monitor=monitor_config,
             projects=projects_config,
@@ -104,7 +144,17 @@ def _load_config(config_path: Path) -> AppConfig:
 def get_config() -> AppConfig:
     """
     Returns the global application configuration, loading it if necessary.
-    This ensures the configuration is loaded only once.
+
+    This function implements the singleton pattern for configuration. The first
+    time it is called, it invokes `_load_config` to read and parse the files.
+    On all subsequent calls, it returns the already-loaded configuration object,
+    avoiding redundant file I/O and ensuring a consistent state.
+
+    This is the designated public function for accessing configuration from
+    any other module in the application.
+
+    Returns:
+        The singleton AppConfig instance.
     """
     global _CONFIG
     if _CONFIG is None:

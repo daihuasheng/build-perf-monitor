@@ -3,10 +3,23 @@ Core orchestration logic for monitoring build processes.
 
 This module provides the main `run_and_monitor_build` function which coordinates
 the entire process of setting up, executing, monitoring, and cleaning up a build.
+It acts as the "engine" of the application, bringing together process management,
+data collection, and reporting.
+
+Key responsibilities include:
+- Setting up a `RunContext` with all necessary information for a single run.
+- Executing pre-build and post-build clean commands.
+- Launching the main build command in a subprocess.
+- Starting a memory collector in a separate thread or process.
+- Reading stdout/stderr from the build process in non-blocking threads.
+- Running the main monitoring loop to collect and process memory samples.
+- Aggregating results into a `MonitoringResults` object.
+- Writing the final summary report and raw data to disk.
+- Ensuring all subprocesses are properly terminated, even on error or interruption.
 """
 
 import logging
-import polars as pl  # Polars is only used for writing the final parquet file
+import polars as pl
 import psutil
 import subprocess
 import threading
@@ -25,10 +38,12 @@ from .process_utils import (
     run_command,
 )
 
-
 logger = logging.getLogger(__name__)
 
 # --- Module Globals ---
+# These globals hold references to the currently active subprocesses. They are
+# essential for the signal handler (`main.py`) to perform a graceful shutdown
+# by terminating these processes from anywhere in the application.
 current_build_proc: Optional[subprocess.Popen] = None
 active_memory_collector: Optional[AbstractMemoryCollector] = None
 
@@ -48,16 +63,34 @@ def run_and_monitor_build(
     specific_build_cores_str: Optional[str],
     monitor_script_pinned_to_core_info: str,
 ) -> None:
-    """Main orchestration function for a single build and monitor run."""
+    """
+    Main orchestration function for a single build and monitor run.
 
-    global current_build_proc
+    This function manages the entire lifecycle for monitoring one project at one
+    parallelism level. It ensures that all steps (setup, execution, monitoring,
+    reporting, cleanup) are performed in the correct order and that resources
+    are properly handled via a `try...finally` block.
 
+    Args:
+        project_config: Configuration for the project to build.
+        parallelism_level: The number of parallel jobs for the build (e.g., -j value).
+        monitoring_interval: The interval in seconds for memory sampling.
+        log_dir: The directory to save all output files for this run.
+        collector_type: The type of memory collector to use ('pss_psutil' or 'rss_pidstat').
+        skip_pre_clean: If True, the pre-build clean step is skipped.
+        monitor_core_id_for_collector_and_build_avoidance: The CPU core ID reserved for the monitor.
+        build_cpu_cores_policy: The policy for assigning CPU cores to the build process.
+        specific_build_cores_str: A string defining specific cores for the build.
+        monitor_script_pinned_to_core_info: A descriptive string about monitor pinning.
+    """
+    global current_build_proc, active_memory_collector
+
+    # --- 1. Setup and Context Creation ---
     project_name = project_config.name
     project_dir = project_config.dir
     build_command_template = project_config.build_command_template
     process_pattern = project_config.process_pattern
     setup_command_template = project_config.setup_command_template
-
     current_timestamp_str = time.strftime("%Y%m%d_%H%M%S")
 
     run_paths = _generate_run_paths(
@@ -70,7 +103,6 @@ def run_and_monitor_build(
         if setup_command_template
         else base_build_cmd
     )
-
     full_build_command_for_popen = base_build_cmd
 
     taskset_available = "taskset" in run_command("which taskset", Path("."))[1]
@@ -115,6 +147,7 @@ def run_and_monitor_build(
             "Skipping pre-build clean step as requested by --no-pre-clean flag."
         )
 
+    # --- 2. Execution and Monitoring ---
     build_stdout_lines: List[str] = []
     build_stderr_lines: List[str] = []
     build_exit_code: int = -1
@@ -149,16 +182,10 @@ def run_and_monitor_build(
         )
 
         stdout_thread = _start_stream_reader_thread(
-            current_build_proc.stdout,
-            "STDOUT",
-            run_context,
-            build_stdout_lines,
+            current_build_proc.stdout, "STDOUT", run_context, build_stdout_lines
         )
         stderr_thread = _start_stream_reader_thread(
-            current_build_proc.stderr,
-            "STDERR",
-            run_context,
-            build_stderr_lines,
+            current_build_proc.stderr, "STDERR", run_context, build_stderr_lines
         )
 
         monitoring_results = _perform_monitoring_loop(
@@ -183,6 +210,7 @@ def run_and_monitor_build(
                 _write_stream_to_summary(f_summary, "STDERR", build_stderr_lines)
 
     finally:
+        # --- 3. Cleanup and Finalization ---
         if local_active_memory_collector:
             local_active_memory_collector.stop()
         if current_build_proc and current_build_proc.poll() is None:
@@ -215,7 +243,13 @@ def run_and_monitor_build(
 
 
 def cleanup_processes() -> None:
-    """Cleans up any running global subprocesses."""
+    """
+    Cleans up any running global subprocesses.
+
+    This function is designed to be called by a signal handler for graceful
+    shutdown (e.g., on Ctrl+C). It stops the active memory collector and
+    terminates the build process.
+    """
     global current_build_proc, active_memory_collector
     if active_memory_collector:
         active_memory_collector.stop()
@@ -234,7 +268,27 @@ def _perform_monitoring_loop(
     metric_fields_header: List[str],
     primary_metric_to_track: Optional[str],
 ) -> MonitoringResults:
-    """Performs the main memory monitoring loop, collecting and processing samples."""
+    """
+    Performs the main memory monitoring loop, collecting and processing samples.
+
+    This function iterates over samples provided by the active memory collector.
+    For each interval's worth of samples, it:
+    1. Categorizes each process using `get_process_category`.
+    2. Aggregates memory usage per category and for the total run.
+    3. Tracks peak memory usage for individual processes and categories.
+    4. Tracks the overall peak memory usage for the entire build.
+    5. Formats the data into rows suitable for the final Parquet file.
+    The loop terminates when the build process finishes.
+
+    Args:
+        active_memory_collector: The initialized memory collector instance.
+        current_build_proc: The Popen object for the running build process.
+        metric_fields_header: A list of metric names provided by the collector.
+        primary_metric_to_track: The main metric to use for summary calculations (e.g., "PSS_KB").
+
+    Returns:
+        A MonitoringResults object containing all aggregated data from the loop.
+    """
     all_samples_data_loop: List[Dict[str, Any]] = []
     category_stats_loop: Dict[str, Dict[str, Any]] = {}
     peak_overall_memory_kb_loop: int = 0
@@ -310,8 +364,6 @@ def _perform_monitoring_loop(
             peak_overall_memory_epoch_loop = current_epoch
 
         for cat_tuple_sum, mem_sum_val_sum in category_mem_sum_interval.items():
-            # cat_tuple_sum is now a string like "Major_Minor", so we need to split it
-            # if we want to write major and minor separately to the Parquet file.
             major_cat_from_key, minor_cat_from_key = cat_tuple_sum.split("_", 1)
             cat_sum_row_dict = _create_summary_row(
                 current_epoch,
@@ -371,7 +423,6 @@ def _generate_run_paths(
     base_filename_part = f"{project_name}_j{parallelism_level}_mem_{collector_type}_{current_timestamp_str}"
     output_parquet_filename = f"{base_filename_part}.parquet"
     output_summary_log_filename = f"{base_filename_part}_summary.log"
-
     return RunPaths(
         output_parquet_file=log_dir / output_parquet_filename,
         output_summary_log_file=log_dir / output_summary_log_filename,
@@ -379,9 +430,7 @@ def _generate_run_paths(
     )
 
 
-def _create_memory_collector(
-    context: RunContext,
-) -> Optional[AbstractMemoryCollector]:
+def _create_memory_collector(context: RunContext) -> Optional[AbstractMemoryCollector]:
     """Creates and returns a memory collector instance based on the run context."""
     global active_memory_collector
     collector_kwargs: Dict[str, Any] = {
@@ -392,16 +441,14 @@ def _create_memory_collector(
     try:
         if context.collector_type == "rss_pidstat":
             active_memory_collector = RssPidstatCollector(
-                context.process_pattern,
-                context.monitoring_interval,
-                **collector_kwargs,
+                context.process_pattern, context.monitoring_interval, **collector_kwargs
             )
         elif context.collector_type == "pss_psutil":
             active_memory_collector = PssPsutilCollector(
                 context.process_pattern, context.monitoring_interval, **collector_kwargs
             )
         else:
-            logger.error(f"Unknown memory collector type: '{context.collector_type}'")
+            logger.error(f"Unknown memory collector type: {context.collector_type}")
             return None
     except Exception as e:
         logger.error(
@@ -454,7 +501,7 @@ def _prepare_initial_summary_log_header(context: RunContext) -> List[str]:
         )
     elif context.collector_type == "rss_pidstat":
         header_content.append(
-            f"Pidstat Collector Target CPU Core: Not Pinned (monitor_core_id not set or taskset unavailable)"
+            "Pidstat Collector Target CPU Core: Not Pinned (monitor_core_id not set or taskset unavailable)"
         )
     header_content.append("-" * 80)
     return header_content
@@ -488,9 +535,7 @@ def _start_stream_reader_thread(
         return None
     log_prefix = f"[{context.project_name}-j{context.parallelism_level} {stream_name}] "
     thread = threading.Thread(
-        target=_stream_output,
-        args=(pipe, log_prefix, output_list),
-        daemon=True,
+        target=_stream_output, args=(pipe, log_prefix, output_list), daemon=True
     )
     thread.start()
     return thread
@@ -524,10 +569,8 @@ def _run_and_log_command_to_summary(
     executable_shell: Optional[str] = None,
 ) -> int:
     """Runs a command and logs its execution details to the summary file."""
-    # Get cwd_path and summary_file from the context object.
     cwd_path = context.project_dir
     summary_file = context.paths.output_summary_log_file
-
     logger.info(f"Executing {cmd_desc} command: {cmd_str} in {cwd_path}")
     with open(summary_file, "a") as f_s:
         f_s.write(f"\n--- {cmd_desc} Command ---\n")
@@ -587,14 +630,14 @@ def _compile_and_write_final_summary_and_aux_logs(
                 "%Y-%m-%d %H:%M:%S", time.localtime(results.peak_overall_memory_epoch)
             )
             if results.peak_overall_memory_epoch > 0
-            else "N/A (no peak recorded or build did not run long enough)"
+            else "N/A"
         )
         final_summary_log_lines.append(
             f"Peak Overall Memory ({primary_metric}): {results.peak_overall_memory_kb} KB (at approx. {peak_time_str})"
         )
     else:
         final_summary_log_lines.append(
-            f"Peak Overall Memory: N/A (no primary metric was tracked for sum)"
+            "Peak Overall Memory: N/A (no primary metric was tracked for sum)"
         )
 
     final_summary_log_lines.append(

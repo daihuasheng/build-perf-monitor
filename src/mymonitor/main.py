@@ -1,13 +1,20 @@
 """
-Main script for the Build Memory Profiler.
+Main command-line entry point for the MyMonitor application.
 
-This script orchestrates the process of building specified projects with varying
-parallelism levels, monitoring their resource consumption (CPU, memory),
-and generating plots from the collected data.
+This script serves as the primary interface for users to run, monitor, and
+analyze build processes. It orchestrates the entire workflow, from parsing
+command-line arguments and loading configurations to executing builds,
+collecting memory data, and generating reports and plots.
 
-It supports configuration for multiple projects, allowing users to specify
-build commands, cleanup commands, and patterns for processes to monitor.
-The script uses pidstat or psutil for resource monitoring.
+Key functionalities include:
+- Parsing command-line arguments to provide flexible, single-run configurations.
+- Loading default settings from TOML configuration files.
+- Overriding file-based configurations with command-line arguments.
+- Handling different execution modes, such as full monitoring runs or clean-only actions.
+- Iterating through specified projects and parallelism levels.
+- Invoking the core monitoring logic from `monitor_utils`.
+- Triggering post-run analysis and plot generation from `plotter`.
+- Ensuring graceful shutdown on system signals (e.g., Ctrl+C).
 """
 
 import argparse
@@ -16,20 +23,22 @@ import signal
 import sys
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
+# Local application imports
 from . import config
+from .data_models import RunContext
 from .monitor_utils import (
-    run_and_monitor_build,
-    cleanup_processes,
     _execute_clean_step,
     _generate_run_paths,
+    cleanup_processes,
+    run_and_monitor_build,
 )
-from .process_utils import check_pidstat_installed
 from .plotter import generate_plots_for_logs
-from .data_models import RunContext
+from .process_utils import check_pidstat_installed
 
 # --- Logging Setup ---
+# Configure a basic logger to output informational messages to the console.
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
@@ -39,12 +48,15 @@ logger = logging.getLogger(__name__)
 
 
 def signal_handler(sig: int, frame: Any) -> None:
-    """
-    Handles termination signals (SIGINT, SIGTERM) for graceful shutdown.
+    """Handles termination signals (SIGINT, SIGTERM) for graceful shutdown.
+
+    This function is registered as a signal handler. When a signal like
+    Ctrl+C is received, it logs a warning, attempts to clean up any running
+    subprocesses via `cleanup_processes`, and then exits the application.
 
     Args:
-        sig: The signal number.
-        frame: The current stack frame.
+        sig: The signal number received.
+        frame: The current stack frame at the time of the signal.
     """
     logger.warning(f"Signal {signal.Signals(sig).name} received, initiating cleanup...")
     cleanup_processes()
@@ -53,19 +65,36 @@ def signal_handler(sig: int, frame: Any) -> None:
 
 def main_cli() -> None:
     """
-    Main command-line interface function for the Build Memory Profiler.
-    Parses command-line arguments to override configurations and runs the monitoring tasks.
+    The main command-line interface (CLI) function for MyMonitor.
+
+    This function orchestrates the entire application lifecycle:
+    1.  Sets up signal handlers for graceful termination.
+    2.  Defines and parses command-line arguments using `argparse`. These
+        arguments allow for flexible, on-the-fly configuration.
+    3.  Loads the base configuration from TOML files (`config.toml`,
+        `projects.toml`, `rules.toml`).
+    4.  Overrides the loaded configuration with any values provided via
+        command-line arguments (CLI arguments have the highest priority).
+    5.  Executes the requested action, which can be:
+        - A "clean-only" run to prepare the build environment.
+        - A full monitoring run, iterating through selected projects and
+          parallelism levels.
+    6.  After the monitoring run, it triggers the plot generation process
+        unless disabled.
     """
-    # Register signal handlers for graceful shutdown
+    # Register signal handlers to ensure cleanup on Ctrl+C or other term signals.
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    # --- Define Command-Line Arguments ---
+    # --- Argument Parsing ---
+    # Configure the argument parser with a description and help text formatting.
+    # `argparse` automatically handles the -h/--help argument.
     parser = argparse.ArgumentParser(
         description="Monitor and analyze build process memory usage.",
         formatter_class=argparse.RawTextHelpFormatter,
     )
-    # Target Selectors
+
+    # Group: Target Selectors - Arguments that specify *what* to run.
     parser.add_argument(
         "-p",
         "--project",
@@ -73,7 +102,8 @@ def main_cli() -> None:
         metavar="NAME",
         help="Specify one or more project names to run (e.g., qemu chromium).\nThis overrides the default behavior of running all projects.",
     )
-    # Behavior Modifiers
+
+    # Group: Behavior Modifiers - Arguments that change *how* the run is executed.
     parser.add_argument(
         "-j",
         "--jobs",
@@ -101,13 +131,15 @@ def main_cli() -> None:
         action="store_true",
         help="Skip the plot generation step after the run.",
     )
-    # Action Flags
+
+    # Group: Action Flags - Arguments that define the main action to perform.
     parser.add_argument(
         "--clean-only",
         action="store_true",
         help="Only run the clean command for the selected projects and exit.",
     )
-    # Meta-Configuration
+
+    # Group: Meta-Configuration - Arguments that control the tool's own configuration.
     parser.add_argument(
         "-c",
         "--config",
@@ -116,12 +148,15 @@ def main_cli() -> None:
     )
     args = parser.parse_args()
 
-    # --- Load Configuration ---
+    # --- Configuration Loading ---
+    # Load the application configuration. If a custom config path is provided via
+    # the CLI, it will be used instead of the default.
     try:
         if args.config:
             if not args.config.is_file():
                 logger.error(f"Specified config file not found: {args.config}")
                 sys.exit(1)
+            # This is the mechanism to point the singleton config loader to a different file.
             config._CONFIG_FILE_PATH = args.config
             config._CONFIG = None  # Force reload
         app_config = config.get_config()
@@ -131,7 +166,8 @@ def main_cli() -> None:
         )
         sys.exit(1)
 
-    # --- Override Configuration with CLI Arguments ---
+    # --- Configuration Overriding ---
+    # Apply command-line arguments to override the settings loaded from files.
     monitor_config = app_config.monitor
     projects_to_run = app_config.projects
 
@@ -157,17 +193,17 @@ def main_cli() -> None:
     if args.no_plots:
         monitor_config.skip_plots = True
 
-    # --- Execute Actions ---
+    # --- Action Execution ---
     if not projects_to_run:
         logger.info("No projects selected to run. Exiting.")
         sys.exit(0)
 
-    # Handle --clean-only action
+    # Handle the --clean-only action flag.
     if args.clean_only:
         logger.info("--- Running in Clean-Only Mode ---")
         for project_config in projects_to_run:
             logger.info(f"Cleaning project: {project_config.name}")
-            # Create a minimal context for the clean step
+            # Create a minimal context required for the clean step.
             dummy_paths = _generate_run_paths(Path("/tmp"), "clean", 0, "na", "na")
             run_context = RunContext(
                 project_name=project_config.name,
@@ -184,40 +220,44 @@ def main_cli() -> None:
                 monitor_core_id=None,
                 paths=dummy_paths,
             )
-            # We can't write to a real summary log, so we just execute the command.
             _execute_clean_step(run_context, project_config, "Clean-Only")
         logger.info("--- Clean-Only Mode Finished ---")
         sys.exit(0)
 
     # --- Main Monitoring Run ---
-    # (The rest of the logic is similar to your previous version, but adapted for the new flags)
+    # Verify system dependencies for the selected collector.
     if monitor_config.metric_type == "rss_pidstat" and not check_pidstat_installed():
-        logger.error("'pidstat' not found. Please install 'sysstat' package.")
+        logger.error(
+            "'pidstat' not found. Please install the 'sysstat' package to use the 'rss_pidstat' collector."
+        )
         sys.exit(1)
 
+    # Create a unique, timestamped directory for this run's output.
     current_run_timestamp = time.strftime("%Y%m%d_%H%M%S")
     run_specific_log_dir_name = f"run_{current_run_timestamp}"
     current_run_output_dir = monitor_config.log_root_dir / run_specific_log_dir_name
     current_run_output_dir.mkdir(parents=True, exist_ok=True)
     logger.info(
-        f"Logs for this run will be saved in: {current_run_output_dir.resolve()}"
+        f"Logs and plots for this run will be saved in: {current_run_output_dir.resolve()}"
     )
 
-    # Pin monitor script to a core (logic can be kept as is)
-    # ... (CPU pinning logic from your previous version would go here) ...
-    actual_monitor_core_id = None  # Placeholder for your pinning logic
+    # TODO: Implement CPU pinning logic for the main monitor script itself.
+    # This logic would use psutil to set the cpu_affinity of the current process.
+    actual_monitor_core_id = None  # Placeholder for CPU pinning logic.
 
+    # Main loop: iterate through each selected project, and for each project,
+    # iterate through each specified parallelism level.
     for project_config in projects_to_run:
         logger.info(f">>> Starting processing for project: {project_config.name}")
         for level in monitor_config.default_jobs:
-            # Pass the --no-pre-clean flag down to the monitoring utility
+            # Delegate the entire build-and-monitor task to the utility function.
             run_and_monitor_build(
                 project_config=project_config,
                 parallelism_level=level,
                 monitoring_interval=monitor_config.interval_seconds,
                 log_dir=current_run_output_dir,
                 collector_type=monitor_config.metric_type,
-                skip_pre_clean=args.no_pre_clean,  # NEW
+                skip_pre_clean=args.no_pre_clean,
                 monitor_core_id_for_collector_and_build_avoidance=actual_monitor_core_id,
                 build_cpu_cores_policy=monitor_config.build_cores_policy,
                 specific_build_cores_str=monitor_config.specific_build_cores,
@@ -227,6 +267,8 @@ def main_cli() -> None:
 
     logger.info("All specified build and monitoring tasks completed.")
 
+    # --- Finalization ---
+    # Generate plots from the collected data unless skipped.
     if not monitor_config.skip_plots:
         logger.info("--- Starting plot generation ---")
         try:
@@ -240,5 +282,6 @@ def main_cli() -> None:
         logger.info("Skipping plot generation as per config or command-line flag.")
 
 
+# Standard Python entry point guard.
 if __name__ == "__main__":
     main_cli()
