@@ -19,6 +19,7 @@ Key functionalities include:
 
 import argparse
 import logging
+import psutil
 import signal
 import sys
 import time
@@ -241,9 +242,40 @@ def main_cli() -> None:
         f"Logs and plots for this run will be saved in: {current_run_output_dir.resolve()}"
     )
 
-    # TODO: Implement CPU pinning logic for the main monitor script itself.
-    # This logic would use psutil to set the cpu_affinity of the current process.
-    actual_monitor_core_id = None  # Placeholder for CPU pinning logic.
+    # --- CPU Pinning for the Monitor Script ---
+    # This logic pins the main script itself to the configured core.
+    actual_monitor_core_id: int | None = None
+    monitor_script_pinned_to_core_info: str = "Not Pinned"
+
+    if monitor_config.monitor_core >= 0:
+        try:
+            p = psutil.Process()
+            available_cores = list(range(psutil.cpu_count()))
+            if monitor_config.monitor_core in available_cores:
+                p.cpu_affinity([monitor_config.monitor_core])
+                actual_monitor_core_id = monitor_config.monitor_core
+                monitor_script_pinned_to_core_info = f"Core {actual_monitor_core_id}"
+                logger.info(
+                    f"Successfully pinned main monitor script to CPU core {actual_monitor_core_id}."
+                )
+            else:
+                monitor_script_pinned_to_core_info = (
+                    f"Invalid Core ID ({monitor_config.monitor_core})"
+                )
+                logger.warning(
+                    f"Configured monitor_core={monitor_config.monitor_core} is not available. Script will not be pinned."
+                )
+        except (AttributeError, NotImplementedError):
+            monitor_script_pinned_to_core_info = "Not Supported on this OS"
+            logger.warning(
+                "CPU affinity is not supported on this OS. Script will not be pinned."
+            )
+        except Exception as e:
+            monitor_script_pinned_to_core_info = f"Error ({e})"
+            logger.error(
+                f"An error occurred while trying to pin the monitor script: {e}",
+                exc_info=True,
+            )
 
     # Main loop: iterate through each selected project, and for each project,
     # iterate through each specified parallelism level.
@@ -261,7 +293,7 @@ def main_cli() -> None:
                 monitor_core_id_for_collector_and_build_avoidance=actual_monitor_core_id,
                 build_cpu_cores_policy=monitor_config.build_cores_policy,
                 specific_build_cores_str=monitor_config.specific_build_cores,
-                monitor_script_pinned_to_core_info="Not Pinned",  # Placeholder
+                monitor_script_pinned_to_core_info=monitor_script_pinned_to_core_info,
             )
         logger.info(f"<<< Finished processing for project: {project_config.name}")
 
