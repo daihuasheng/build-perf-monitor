@@ -4,7 +4,7 @@
 # Monitor-wide settings
 # ===================================================================
 [monitor]
-interval_seconds = 1
+interval_seconds = 0.05
 default_jobs = [4, 8, 16]
 metric_type = "pss_psutil"
 monitor_core = 0
