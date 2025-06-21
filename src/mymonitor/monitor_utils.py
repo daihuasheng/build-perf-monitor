@@ -42,6 +42,7 @@ def run_and_monitor_build(
     monitoring_interval: int,
     log_dir: Path,
     collector_type: str,
+    skip_pre_clean: bool,
     monitor_core_id_for_collector_and_build_avoidance: Optional[int],
     build_cpu_cores_policy: str,
     specific_build_cores_str: Optional[str],
@@ -107,7 +108,12 @@ def run_and_monitor_build(
     if not local_active_memory_collector:
         return
 
-    _execute_clean_step(run_context, project_config, "Pre-Build Clean")
+    if not skip_pre_clean:
+        _execute_clean_step(run_context, project_config, "Pre-Build Clean")
+    else:
+        logger.info(
+            "Skipping pre-build clean step as requested by --no-pre-clean flag."
+        )
 
     build_stdout_lines: List[str] = []
     build_stderr_lines: List[str] = []
