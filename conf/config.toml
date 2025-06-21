@@ -1,0 +1,22 @@
+# Main configuration for the MyMonitor application.
+
+# ===================================================================
+# Monitor-wide settings
+# ===================================================================
+[monitor]
+interval_seconds = 1
+default_jobs = [4, 8, 16]
+metric_type = "pss_psutil"
+monitor_core = 0
+build_cores_policy = "all_others"
+specific_build_cores = ""
+skip_plots = false
+log_root_dir = "logs"
+
+# ===================================================================
+# Paths to specialized configuration files
+# These paths are relative to this config.toml file.
+# ===================================================================
+[paths]
+projects_config = "projects.toml"
+rules_config = "rules.toml"

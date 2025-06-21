@@ -5,9 +5,10 @@ description = "A build process memory monitor."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "polars-lts-cpu[pyarrow]", # For data analysis and manipulation, pyarrow for better CSV/Parquet performance
     "plotly",                  # For interactive plotting
+    "polars-lts-cpu[pyarrow]", # For data analysis and manipulation, pyarrow for better CSV/Parquet performance
     "psutil",                  # For system and process utilities
+    "toml",                    # For reading project configuration files
 ]
 
 [project.scripts]

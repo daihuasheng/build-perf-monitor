@@ -1,0 +1,389 @@
+# ===================================================================
+# Process Categorization Rules for MyMonitor
+# ===================================================================
+#
+# How Priorities Work:
+# -------------------
+# The categorization system processes these rules in DESCENDING order of 'priority'.
+# The first rule that matches a process "wins", and the process is categorized.
+# This creates a "funnel" effect, matching from the most specific patterns to the
+# most general ones. The priority values are designed to reflect this specificity.
+#
+# Priority Tiers Explained:
+#
+#   - Priority > 900 (Critical):
+#     For special-case rules that must always run first, like ignoring certain
+#     processes (e.g., VSCode server) to prevent them from being categorized.
+#
+#   - Priority 150-250 (High - Unambiguous Processes):
+#     For highly specific and unambiguous process names or patterns. These are
+#     processes that are almost certainly one specific thing.
+#     Examples: 'cc1plus' (GCC C++ compiler internal), 'ninja', 'soong_build'.
+#
+#   - Priority 100-149 (Medium - Specific Actions):
+#     For rules that distinguish different actions of the same tool, usually by
+#     matching command-line arguments. These are more specific than just the
+#     process name but less specific than a unique internal process.
+#     Examples: 'gcc -c' (compile) vs. 'gcc -o' (link).
+#
+#   - Priority 50-99 (Low - Fallback / General Purpose):
+#     For "fallback" rules that catch a general tool if none of the more specific
+#     action-based rules matched.
+#     Examples: A generic 'gcc' or 'clang' driver process that wasn't identified
+#     as a specific compile or link step.
+#
+#   - Priority < 50 (Very Low - Common Utilities):
+#     For very common tools or utilities that should only be matched if nothing
+#     more specific was found.
+#     Examples: 'python', 'bash', 'cp', 'rm', 'ar', 'zip'.
+#
+# This interleaved priority system is intentional and crucial for accuracy.
+# For instance, a high-priority rule for 'clang -cc1' (internal compiler) must
+# be checked before a low-priority fallback rule for 'clang' (generic driver).
+#
+# ===================================================================
+
+# Priority > 900 (Critical)
+[[rules]]
+major_category = "Ignored"
+category = "VSCodeServer"
+priority = 1000
+match_field = "current_cmd_name"
+match_type = "exact"
+pattern = "code"
+comment = "Ignore VS Code editor processes by command name."
+
+# Priority 150-250 (High - Unambiguous Processes)
+[[rules]]
+major_category = "BuildSystem"
+category = "BazelServer"
+priority = 200
+match_field = "current_cmd_full"
+match_type = "regex"
+pattern = 'java.*Bazel.*(A-server\.jar|server\.jar)'
+comment = "Matches Bazel server Java processes."
+
+[[rules]]
+major_category = "BuildSystem"
+category = "Gradle"
+priority = 195
+match_field = "current_cmd_full"
+match_type = "regex"
+pattern = 'java.*gradle'
+comment = "Matches Gradle Java processes."
+
+[[rules]]
+major_category = "BuildSystem"
+category = "Ninja"
+priority = 190
+match_field = "current_cmd_name"
+match_type = "exact"
+pattern = "ninja"
+comment = "Ninja build system."
+
+[[rules]]
+major_category = "BuildSystem"
+category = "Make"
+priority = 185
+match_field = "current_cmd_name"
+match_type = "in_list"
+patterns = ["make", "gmake"]
+comment = "Make or gmake."
+
+[[rules]]
+major_category = "BuildSystem"
+category = "CMake"
+priority = 182
+match_field = "current_cmd_name"
+match_type = "exact"
+pattern = "cmake"
+comment = "CMake build configuration tool."
+
+[[rules]]
+major_category = "BuildSystem"
+category = "Kati"
+priority = 180
+match_field = "current_cmd_name"
+match_type = "in_list"
+patterns = ["kati", "ckati"]
+comment = "Kati or ckati (Soong's make)."
+
+[[rules]]
+major_category = "BuildSystem"
+category = "SoongUI"
+priority = 175
+match_field = "current_cmd_name"
+match_type = "in_list"
+patterns = ["soong_ui", "soong_ui.bash"]
+comment = "Soong UI."
+
+[[rules]]
+major_category = "BuildSystem"
+category = "SoongBuild"
+priority = 170
+match_field = "current_cmd_name"
+match_type = "exact"
+pattern = "soong_build"
+comment = "Soong build process itself."
+
+[[rules]]
+major_category = "BuildSystem"
+category = "BazelClient"
+priority = 165
+match_field = "current_cmd_name"
+match_type = "exact"
+pattern = "bazel"
+comment = "Bazel client."
+
+[[rules]]
+major_category = "CPP_Compile"
+category = "ClangInternalCompiler"
+priority = 161
+match_field = "current_cmd_full"
+match_type = "contains"
+pattern = " -cc1 "
+comment = "Clang running in internal compiler/worker mode."
+
+[[rules]]
+major_category = "BuildSystem"
+category = "Gomacc"
+priority = 160
+match_field = "current_cmd_name"
+match_type = "exact"
+pattern = "gomacc"
+comment = "Goma C/C++ compiler."
+
+[[rules]]
+major_category = "CPP_Compile"
+category = "GCCInternalCompiler"
+priority = 160
+match_field = "current_cmd_name"
+match_type = "in_list"
+patterns = ["cc1", "cc1plus"]
+comment = "Actual GCC C/C++ compiler internals."
+
+[[rules]]
+major_category = "BuildSystem"
+category = "Siso"
+priority = 155
+match_field = "current_cmd_name"
+match_type = "exact"
+pattern = "siso"
+comment = "Siso build system (Chromium)."
+
+[[rules]]
+major_category = "CPP_Link"
+category = "DirectLinker"
+priority = 155
+match_field = "current_cmd_name"
+match_type = "in_list"
+patterns = ["ld", "collect2", "lld", "ld.lld"]
+comment = "Direct C/C++ linker/collector calls."
+
+[[rules]]
+major_category = "CPP_Assemble"
+category = "DirectAssembler"
+priority = 150
+match_field = "current_cmd_name"
+match_type = "exact"
+pattern = "as"
+comment = "C/C++ Assembler."
+
+# Priority 100-149 (Medium - Specific Actions)
+
+[[rules]]
+major_category = "CPP_Driver"
+category = "Driver_Preprocessing"
+priority = 140
+match_field = "current_cmd_full"
+match_type = "regex"
+pattern = '^(?:.*/)?(?:clang\+\+|g\+\+|clang|gcc|cc)(?=\s|$).*?\s-E(\s|$)'
+comment = "Driver (clang, gcc, etc.) performing preprocessing (-E flag)."
+
+[[rules]]
+major_category = "CPP_Driver"
+category = "Driver_SourceToAsm"
+priority = 135
+match_field = "current_cmd_full"
+match_type = "regex"
+pattern = '^(?:.*/)?(?:clang\+\+|g\+\+|clang|gcc|cc)(?=\s|$).*?\s-S(\s|$)'
+comment = "Driver (clang, gcc, etc.) compiling source to assembly (-S flag)."
+
+[[rules]]
+major_category = "CPP_Driver"
+category = "Driver_AsmToObj"
+priority = 130
+match_field = "current_cmd_full"
+match_type = "regex"
+pattern = '^(?:.*/)?(?:clang\+\+|g\+\+|clang|gcc|cc)(?=\s|$)(?=.*?\s\S+\.(?:s|S)\b).*?\s-c(\s|$)'
+comment = "Driver (clang, gcc, etc.) compiling an assembly file (.s, .S) to an object file (-c flag)."
+
+[[rules]]
+major_category = "CPP_Driver"
+category = "Driver_Compile"
+priority = 125
+match_field = "current_cmd_full"
+match_type = "regex"
+pattern = '^(?:.*/)?(?:clang\+\+|g\+\+|clang|gcc|cc)(?=\s|$)(?!.*?\.s\b)(?!.*?\.S\b).*?\s-c(\s|$)'
+comment = "Driver (clang, gcc, etc.) compiling a source file (not .s/.S) to an object file (-c flag)."
+
+[[rules]]
+major_category = "CPP_Driver"
+category = "Driver_Link"
+priority = 120
+match_field = "current_cmd_full"
+match_type = "regex"
+pattern = '^(?:.*/)?(?:clang\+\+|g\+\+|clang|gcc|cc)(?=\s|$)(?!.*?(\s-c|\s-S|\s-E)(\s|$)).*?\s-o\s'
+comment = "Driver (clang, gcc, etc.) performing linking (has -o, but not -c, -S, or -E)."
+
+# Priority 50-99 (Low - Fallback / General Purpose)
+
+[[rules]]
+major_category = "CPP_Driver"
+category = "Driver_Clang_Fallback"
+priority = 85
+match_field = "current_cmd_name"
+match_type = "in_list"
+patterns = ["clang", "clang++", "cc"]
+comment = "Clang/cc driver process. Should be matched only if not an internal compiler call."
+
+[[rules]]
+major_category = "CPP_Driver"
+category = "Driver_GCC_Fallback"
+priority = 84
+match_field = "current_cmd_name"
+match_type = "in_list"
+patterns = ["gcc", "g++"]
+comment = "GCC/g++ driver process. Should be matched only if not an internal compiler call."
+
+[[rules]]
+major_category = "Java_Compile"
+category = "Java_CompileAndDex"
+priority = 70
+match_field = "current_cmd_name"
+match_type = "exact"
+pattern = "java"
+comment = "General Java processes, including compilation and dexing."
+
+[[rules]]
+major_category = "Java_Compile"
+category = "Java_CompileAndDex_Path"
+priority = 69
+match_field = "current_cmd_full"
+match_type = "regex"
+pattern = '(?:^|/)java\b'
+comment = "Catches java if it's a path, if not caught by cmd_name 'java'."
+
+[[rules]]
+major_category = "Rust_Compile"
+category = "Rust_Compiler"
+priority = 65
+match_field = "current_cmd_name"
+match_type = "exact"
+pattern = "rustc"
+comment = "Rust compiler."
+
+[[rules]]
+major_category = "Scripting"
+category = "ShellScriptFile"
+priority = 62
+match_field = "current_cmd_full"
+match_type = "regex"
+pattern = "\\.sh(\\s|$)"
+comment = "Matches shell scripts by finding '.sh' in the full command."
+
+[[rules]]
+major_category = "Scripting"
+category = "ShellInteractiveOrDirect"
+priority = 61
+match_field = "current_cmd_name"
+match_type = "in_list"
+patterns = ["bash", "sh", "zsh"]
+comment = "Interactive shells or direct shell command execution."
+
+# Priority < 50 (Very Low - Common Utilities)
+[[rules]]
+major_category = "OSUtilities"
+category = "Generic"
+priority = 50 # Note: This is higher than other utilities because it's a large, common group.
+match_field = "current_cmd_name"
+match_type = "in_list"
+patterns = [
+  "mkdir", "rm", "cp", "mv", "cat", "sed", "echo", "touch", "ln", "find",
+  "grep", "awk", "tr", "sort", "uniq", "head", "tail", "basename", "dirname",
+  "readlink", "stat", "chmod", "chown", "expr", "sleep", "date",
+  "unzip", "xz", "tar", "gzip", "bzip2", "patch"
+]
+comment = "Common OS utility commands."
+
+[[rules]]
+major_category = "OSUtilities"
+category = "TestCommand"
+priority = 48
+match_field = "current_cmd_name"
+match_type = "exact"
+pattern = "test"
+comment = "OS 'test' command."
+
+[[rules]]
+major_category = "Scripting"
+category = "Python"
+priority = 45
+match_field = "current_cmd_name"
+match_type = "regex"
+pattern = '^python[0-9._-]*$'
+comment = "Matches python interpreters (e.g., python, python3, python3.12)."
+
+[[rules]]
+major_category = "DevelopmentTools"
+category = "AndroidResource"
+priority = 40
+match_field = "current_cmd_name"
+match_type = "in_list"
+patterns = ["aapt", "aapt2"]
+comment = "Android Asset Packaging Tool."
+
+[[rules]]
+major_category = "DevelopmentTools"
+category = "ArchiveAR"
+priority = 20
+match_field = "current_cmd_name"
+match_type = "in_list"
+patterns = ["ar", "llvm-ar"]
+comment = "Archiver tool (ar, llvm-ar)."
+
+[[rules]]
+major_category = "DevelopmentTools"
+category = "ArchiveZIP"
+priority = 19
+match_field = "current_cmd_name"
+match_type = "in_list"
+patterns = ["zip", "jar", "soong_zip", "zip2zip", "zipsync"]
+comment = "ZIP and JAR related tools."
+
+[[rules]]
+major_category = "DevelopmentTools"
+category = "BinStrip"
+priority = 18
+match_field = "current_cmd_name"
+match_type = "exact"
+pattern = "strip"
+comment = "Symbol stripping tool."
+
+[[rules]]
+major_category = "DevelopmentTools"
+category = "BinObjcopy"
+priority = 17
+match_field = "current_cmd_name"
+match_type = "in_list"
+patterns = ["objcopy", "llvm-objcopy"]
+comment = "Object copying and manipulation tool."
+
+[[rules]]
+major_category = "Testing"
+category = "GoTest"
+priority = 10
+match_field = "orig_cmd_full"
+match_type = "regex"
+pattern = 'gotestrunner|(_test/.*\s-test\.|\.test(\s|$))'
+comment = "Go test runner or Go test binaries."

@@ -10,6 +10,60 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
+# --- Configuration Models ---
+
+
+@dataclass
+class MonitorConfig:
+    """Configuration for the monitor's behavior."""
+
+    interval_seconds: int
+    default_jobs: List[int]
+    metric_type: str
+    monitor_core: int
+    build_cores_policy: str
+    specific_build_cores: str
+    skip_plots: bool
+    log_root_dir: Path
+
+
+@dataclass
+class ProjectConfig:
+    """Configuration for a single project to be monitored."""
+
+    name: str
+    dir: Path
+    build_command_template: str
+    process_pattern: str
+    clean_command_template: str
+    setup_command_template: str
+
+
+@dataclass
+class RuleConfig:
+    """Configuration for a single categorization rule."""
+
+    major_category: str
+    category: str
+    priority: int
+    match_field: str
+    match_type: str
+    pattern: Optional[str] = None
+    patterns: Optional[List[str]] = None
+    comment: Optional[str] = ""
+
+
+@dataclass
+class AppConfig:
+    """Root object holding all application configurations."""
+
+    monitor: MonitorConfig
+    projects: List[ProjectConfig]
+    rules: List[RuleConfig]
+
+
+# --- Runtime Data Models ---
+
 
 @dataclass
 class RunPaths:

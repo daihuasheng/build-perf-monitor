@@ -1,8 +1,43 @@
 import pytest
 from pathlib import Path
 
-# Since we did `pip install -e .`, we can now import directly
+from mymonitor.data_models import AppConfig, RuleConfig, MonitorConfig
 from mymonitor.process_utils import get_process_category, determine_build_cpu_affinity
+
+# --- Fixture for Mocking Configuration ---
+
+@pytest.fixture
+def mock_rules_config(monkeypatch):
+    """
+    Mocks the application configuration for process utility tests.
+    This fixture creates a controlled set of rules in memory and uses monkeypatch
+    to make `config.get_config()` return this controlled config. This isolates
+    the test from the actual .toml files on disk.
+    """
+    # Define a minimal set of rules needed for these specific tests
+    test_rules = [
+        RuleConfig(major_category="CPP_Compile", category="GCCInternalCompiler", priority=160, match_field="current_cmd_name", match_type="in_list", patterns=["cc1", "cc1plus"]),
+        RuleConfig(major_category="CPP_Driver", category="Driver_Compile", priority=125, match_field="current_cmd_full", match_type="regex", pattern=r"^(?:.*/)?(clang\+\+|clang|gcc|g\+\+|cc)\b.*\s-c(\s|$)"),
+        RuleConfig(major_category="CPP_Link", category="DirectLinker", priority=155, match_field="current_cmd_name", match_type="in_list", patterns=["ld", "collect2", "lld", "ld.lld"]),
+        RuleConfig(major_category="BuildSystem", category="Ninja", priority=190, match_field="current_cmd_name", match_type="exact", pattern="ninja"),
+        RuleConfig(major_category="Scripting", category="ShellScriptFile", priority=45, match_field="current_cmd_name", match_type="endswith", pattern=".sh"),
+    ]
+    test_rules.sort(key=lambda r: r.priority, reverse=True)
+
+    # Create a mock AppConfig object. Monitor and Projects can be empty for this test.
+    mock_app_config = AppConfig(
+        monitor=MonitorConfig(interval_seconds=1, default_jobs=[], metric_type="", monitor_core=-1, build_cores_policy="", specific_build_cores="", skip_plots=True, log_root_dir=Path("/tmp")),
+        projects=[],
+        rules=test_rules
+    )
+
+    # Use monkeypatch to directly set the internal _CONFIG object in the config module.
+    # This ensures that any call to config.get_config() during this test will return our mock object.
+    # We also set it to None after the test to ensure clean state for other tests.
+    monkeypatch.setattr("mymonitor.config._CONFIG", mock_app_config)
+    yield
+    monkeypatch.setattr("mymonitor.config._CONFIG", None)
+
 
 # --- Tests for get_process_category ---
 
@@ -31,16 +66,17 @@ from mymonitor.process_utils import get_process_category, determine_build_cpu_af
         ("my_script.sh", "./my_script.sh --all", "Scripting", "ShellScriptFile"),
     ],
 )
-def test_get_process_category(cmd_name, cmd_full, expected_major, expected_minor):
+def test_get_process_category(mock_rules_config, cmd_name, cmd_full, expected_major, expected_minor):
     """
     Tests the get_process_category function with various command inputs.
+    The 'mock_rules_config' fixture ensures that a controlled set of rules is used.
     """
     major_cat, minor_cat = get_process_category(cmd_name, cmd_full)
     assert major_cat == expected_major
     assert minor_cat == expected_minor
 
 
-# --- Tests for determine_build_cpu_affinity ---
+# --- Tests for determine_build_cpu_affinity (No changes needed here) ---
 
 def test_determine_cpu_affinity_all_others_policy():
     """

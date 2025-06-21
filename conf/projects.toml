@@ -1,0 +1,65 @@
+# ===================================================================
+# Project definitions for MyMonitor
+# Each project to be monitored is defined as a separate [[projects]] table.
+# ===================================================================
+
+[[projects]]
+# A descriptive name for the project.
+name = "qemu"
+
+# The directory where the build command should be executed.
+dir = "/host/qemu/build"
+
+# An optional command to run before the build command (e.g., setting up the environment).
+# An empty string means no setup command is executed.
+setup_command_template = ""
+
+# The command template for building the project. <N> will be replaced with the parallelism level.
+build_command_template = "make -j<N>"
+
+# A regex pattern to identify processes belonging to this project's build.
+# This is used by the memory collector to filter relevant processes.
+process_pattern = "make|qemu.*|gcc|cc|g\\+\\+|c\\+\\+|clang|as|ld|cc1|collect2|configure|python[0-9._-]*"
+
+# The command to clean the project build artifacts.
+clean_command_template = "make clean"
+
+
+[[projects]]
+# A descriptive name for the project.
+name = "aosp"
+
+# The directory where the build command should be executed.
+dir = "/host/aosp"
+
+# A command to set up the build environment. This will be run in a shell.
+setup_command_template = "source build/envsetup.sh && lunch aosp_arm64-userdebug"
+
+# The command template for building the project.
+build_command_template = "m -j<N>"
+
+# A regex pattern to identify processes belonging to this project's build.
+process_pattern = "make|soong_ui|soong_build|ninja|kati|javac|aapt[2]?|d8|r8|metalava|clang[^\\s-]*|ld\\.lld|lld|gcc|cc|g\\+\\+|c\\+\\+|python[0-9._-]*|bpfmt|aidl|hidl-gen|dex2oat|zip|rsync"
+
+# The command to clean the project build artifacts.
+clean_command_template = "m clean"
+
+
+[[projects]]
+# A descriptive name for the project.
+name = "chromium"
+
+# The directory where the build command should be executed.
+dir = "/host/chromium/src"
+
+# No setup command is needed for this project.
+setup_command_template = ""
+
+# The command template for building the project.
+build_command_template = "autoninja -C out/Default chrome -j<N>"
+
+# A regex pattern to identify processes belonging to this project's build.
+process_pattern = "ninja|gn|clang[^\\s-]*|gomacc|siso|ld\\.lld|lld|python[0-9._-]*|mojo[a-z_]*|lcc|ar|ranlib|strip"
+
+# The command to clean the project build artifacts.
+clean_command_template = "gn clean out/Default"

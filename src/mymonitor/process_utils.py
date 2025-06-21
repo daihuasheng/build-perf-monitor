@@ -8,19 +8,15 @@ This module provides helpers for:
 - Checking for system dependencies like 'pidstat'.
 """
 
-import json
 import logging
 import re
 import shlex
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Optional, Tuple
+from . import config
 
 logger = logging.getLogger(__name__)
-
-# --- Globals for Rule Caching ---
-_CATEGORY_RULES: Optional[List[Dict[str, Any]]] = None
-_RULES_FILE_PATH = Path(__file__).resolve().parent / "category_rules.json"
 
 
 def determine_build_cpu_affinity(
@@ -44,7 +40,7 @@ def determine_build_cpu_affinity(
                 all_cores = set(range(total_cores_available))
                 if monitor_core_id is not None and monitor_core_id in all_cores:
                     all_cores.remove(monitor_core_id)
-                
+
                 # Create a comma-separated list of core ranges
                 if all_cores:
                     sorted_cores = sorted(list(all_cores))
@@ -55,11 +51,15 @@ def determine_build_cpu_affinity(
                         if sorted_cores[i] == end + 1:
                             end = sorted_cores[i]
                         else:
-                            ranges.append(f"{start}-{end}" if start != end else str(start))
+                            ranges.append(
+                                f"{start}-{end}" if start != end else str(start)
+                            )
                             start = end = sorted_cores[i]
                     ranges.append(f"{start}-{end}" if start != end else str(start))
                     cores_for_build_taskset_str = ",".join(ranges)
-                    build_cores_target_str = f"All Other Cores (cores: {cores_for_build_taskset_str})"
+                    build_cores_target_str = (
+                        f"All Other Cores (cores: {cores_for_build_taskset_str})"
+                    )
                 else:
                     build_cores_target_str = "All Available (no other cores left)"
             else:
@@ -111,9 +111,7 @@ def run_command(
             capture_output=True,
             text=True,
             shell=shell,
-            executable=(
-                executable_shell if shell else None
-            ),
+            executable=(executable_shell if shell else None),
             check=False,
         )
         if process.returncode != 0:
@@ -128,41 +126,13 @@ def run_command(
         return -1, "", str(e)
 
 
-def load_category_rules() -> List[Dict[str, Any]]:
-    """
-    Loads and caches category rules from the JSON file, sorted by priority.
-    (Content of the original _load_category_rules function)
-    """
-    global _CATEGORY_RULES
-    if _CATEGORY_RULES is None:
-        try:
-            with open(_RULES_FILE_PATH, "r") as f:
-                rules = json.load(f)
-            # Sort rules by priority, descending. Higher numbers run first.
-            _CATEGORY_RULES = sorted(
-                rules, key=lambda r: r.get("priority", 0), reverse=True
-            )
-            logger.info(
-                f"Loaded and sorted {_RULES_FILE_PATH.name} with {len(_CATEGORY_RULES)} rules."
-            )
-        except FileNotFoundError:
-            logger.error(f"Category rules file not found: {_RULES_FILE_PATH}")
-            _CATEGORY_RULES = []
-        except json.JSONDecodeError as e:
-            logger.error(f"Error decoding JSON from {_RULES_FILE_PATH}: {e}")
-            _CATEGORY_RULES = []
-        except Exception as e:
-            logger.error(f"Error loading category rules from {_RULES_FILE_PATH}: {e}")
-            _CATEGORY_RULES = []
-    return _CATEGORY_RULES
-
-
 def get_process_category(cmd_name: str, cmd_full: str) -> Tuple[str, str]:
     """
     Categorizes a process based on its command name and full command line.
     (Content of the original get_process_category function)
     """
-    rules = load_category_rules()
+    # Get rules from the new config system
+    rules = config.get_config().rules
     orig_cmd_name = cmd_name
     orig_cmd_full = cmd_full
 
@@ -196,22 +166,41 @@ def get_process_category(cmd_name: str, cmd_full: str) -> Tuple[str, str]:
         current_cmd_name = current_cmd_name[:-5]
     current_cmd_full = unwrapped_cmd_full
 
-    for rule in rules:
-        minor_category_from_rule = rule.get("category")
-        major_category_from_rule = rule.get("major_category")
-        match_field_key = rule.get("match_field")
-        match_type = rule.get("match_type")
-        pattern_str = rule.get("pattern")
-        patterns_list = rule.get("patterns")
+    # DEBUG BEGIN: Debug log to trace matching process
+    logger.debug(f"--- Starting categorization for: name='{cmd_name}', full='{cmd_full}' ---")
+    logger.debug(f"    Using effective command: name='{current_cmd_name}', full='{current_cmd_full}'")
+    # DEBUG END
 
-        if (
-            not minor_category_from_rule
-            or not major_category_from_rule
-            or not match_field_key
-            or not match_type
+    for rule in rules:
+        minor_category_from_rule = rule.category
+        major_category_from_rule = rule.major_category
+        match_field_key = rule.match_field
+        match_type = rule.match_type
+        pattern_str = rule.pattern
+        patterns_list = rule.patterns
+
+        # The dataclass ensures these fields exist, so extensive checking is not needed
+        # but we can keep a basic sanity check.
+        if not all(
+            [
+                minor_category_from_rule,
+                major_category_from_rule,
+                match_field_key,
+                match_type,
+            ]
         ):
-            logger.warning(f"Skipping invalid rule: {rule}")
+            logger.warning(f"Skipping invalid rule object: {rule}")
             continue
+
+        # DEBUG BEGIN: Detailed debug log inside the loop
+        if match_type == "regex" and pattern_str is not None:
+            is_match = bool(re.search(pattern_str, target_value))
+            logger.debug(
+                f"  - Rule '{rule.category}' (regex): "
+                f"Target='{target_value}', Pattern='{pattern_str}', Match={is_match}"
+            )
+            match_found = is_match
+        # DEBUG END
 
         target_value = None
         if match_field_key == "current_cmd_name":
@@ -239,23 +228,6 @@ def get_process_category(cmd_name: str, cmd_full: str) -> Tuple[str, str]:
         elif match_type == "in_list" and patterns_list is not None:
             match_found = target_value in patterns_list
 
-        # --- BEGIN DEBUGGING BLOCK ---
-        # This block will print debug info ONLY for the rule we are interested in.
-        if minor_category_from_rule == "Driver_Compile":
-            logger.info("--- DEBUG: Checking 'Driver_Compile' rule ---")
-            logger.info(f"DEBUG: Target Value (current_cmd_full): '{target_value}'")
-            logger.info(f"DEBUG: Pattern String from JSON: '{pattern_str}'")
-            if pattern_str and target_value:
-                try:
-                    match_object = re.search(pattern_str, target_value)
-                    logger.info(f"DEBUG: re.search() result: {'MATCH FOUND' if match_object else 'NO MATCH'}")
-                    if match_object:
-                        logger.info(f"DEBUG: Match groups: {match_object.groups()}")
-                except Exception as e_debug:
-                    logger.error(f"DEBUG: Exception during re.search: {e_debug}")
-            logger.info("--- END DEBUG ---")
-        # --- END DEBUGGING BLOCK ---
-
         if (
             major_category_from_rule == "Scripting"
             and minor_category_from_rule == "ShellInteractiveOrDirect"
@@ -267,6 +239,11 @@ def get_process_category(cmd_name: str, cmd_full: str) -> Tuple[str, str]:
             return major_category_from_rule, minor_category_from_rule
 
     safe_cmd_name_part = re.sub(r"[^a-zA-Z0-9_.-]", "_", current_cmd_name[:30])
+    
+    # DEBUG BEGIN: Debug log for when no rule is matched
+    logger.debug(f"--- No rule matched. Categorizing as Other: Other_{safe_cmd_name_part} ---")
+    # DEBUG END
+    
     return "Other", f"Other_{safe_cmd_name_part}"
 
 

@@ -12,10 +12,10 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, IO, List, Optional, Tuple
+from typing import Any, Dict, IO, List, Optional, Tuple, Set
 
 # Import local modules
-from .data_models import MonitoringResults, RunContext, RunPaths
+from .data_models import MonitoringResults, ProjectConfig, RunContext, RunPaths
 from .memory_collectors.base import AbstractMemoryCollector
 from .memory_collectors.pss_psutil_collector import PssPsutilCollector
 from .memory_collectors.rss_pidstat_collector import RssPidstatCollector
@@ -37,7 +37,7 @@ active_memory_collector: Optional[AbstractMemoryCollector] = None
 
 
 def run_and_monitor_build(
-    project_config: Dict[str, Any],
+    project_config: ProjectConfig,
     parallelism_level: int,
     monitoring_interval: int,
     log_dir: Path,
@@ -48,15 +48,14 @@ def run_and_monitor_build(
     monitor_script_pinned_to_core_info: str,
 ) -> None:
     """Main orchestration function for a single build and monitor run."""
-    # ... (This function is heavily modified to use the new structure)
+
     global current_build_proc
 
-    project_name = project_config["NAME"]
-    project_dir = Path(project_config["DIR"])
-    build_command_template = project_config["BUILD_COMMAND_TEMPLATE"]
-    process_pattern = project_config["PROCESS_PATTERN"]
-    clean_command_template = project_config.get("CLEAN_COMMAND_TEMPLATE", "")
-    setup_command_template = project_config.get("SETUP_COMMAND_TEMPLATE", "")
+    project_name = project_config.name
+    project_dir = project_config.dir
+    build_command_template = project_config.build_command_template
+    process_pattern = project_config.process_pattern
+    setup_command_template = project_config.setup_command_template
 
     current_timestamp_str = time.strftime("%Y%m%d_%H%M%S")
 
@@ -104,24 +103,11 @@ def run_and_monitor_build(
     with open(run_context.paths.output_summary_log_file, "w") as f_summary:
         f_summary.write("\n".join(summary_log_header_content) + "\n\n")
 
-    local_active_memory_collector = _create_memory_collector(
-        collector_type,
-        process_pattern,
-        monitoring_interval,
-        run_paths.collector_aux_log_file,
-        monitor_core_id_for_collector_and_build_avoidance,
-        taskset_available,
-    )
+    local_active_memory_collector = _create_memory_collector(run_context)
     if not local_active_memory_collector:
         return
 
-    _execute_clean_step(
-        setup_command_template,
-        clean_command_template,
-        project_dir,
-        run_paths.output_summary_log_file,
-        "Pre-Build Clean",
-    )
+    _execute_clean_step(run_context, project_config, "Pre-Build Clean")
 
     build_stdout_lines: List[str] = []
     build_stderr_lines: List[str] = []
@@ -159,15 +145,13 @@ def run_and_monitor_build(
         stdout_thread = _start_stream_reader_thread(
             current_build_proc.stdout,
             "STDOUT",
-            project_name,
-            parallelism_level,
+            run_context,
             build_stdout_lines,
         )
         stderr_thread = _start_stream_reader_thread(
             current_build_proc.stderr,
             "STDERR",
-            project_name,
-            parallelism_level,
+            run_context,
             build_stderr_lines,
         )
 
@@ -212,26 +196,16 @@ def run_and_monitor_build(
 
         if monitoring_results:
             _compile_and_write_final_summary_and_aux_logs(
-                run_paths.output_summary_log_file,
-                build_exit_code,
-                duration_seconds_float,
-                formatted_duration,
-                primary_metric_to_track,
-                monitoring_results,
-                collector_type,
-                run_paths.collector_aux_log_file,
+                context=run_context,
+                results=monitoring_results,
+                build_exit_code=build_exit_code,
+                duration_float=duration_seconds_float,
+                duration_formatted=formatted_duration,
+                primary_metric=primary_metric_to_track,
             )
-            _write_monitoring_data_to_parquet(
-                monitoring_results.all_samples_data, run_paths.output_parquet_file
-            )
+            _write_monitoring_data_to_parquet(monitoring_results, run_context)
 
-        _execute_clean_step(
-            setup_command_template,
-            clean_command_template,
-            project_dir,
-            run_paths.output_summary_log_file,
-            "Post-Build Clean",
-        )
+        _execute_clean_step(run_context, project_config, "Post-Build Clean")
 
 
 def cleanup_processes() -> None:
@@ -260,22 +234,21 @@ def _perform_monitoring_loop(
     peak_overall_memory_kb_loop: int = 0
     peak_overall_memory_epoch_loop: int = 0
     category_peak_sum_loop: Dict[str, int] = {}
-    category_pid_set_loop: Dict[str, set] = {}
+    category_pid_set_loop: Dict[str, Set[str]] = {}
 
     logger.info("Starting monitoring loop...")
 
     for samples_at_interval in active_memory_collector.read_samples():
         current_epoch = int(time.time())
-        category_mem_sum_interval: Dict[Tuple[str, str], int] = {}
+        category_mem_sum_interval: Dict[str, int] = {}
         all_mem_sum_interval: int = 0
-        category_pids_interval: Dict[Tuple[str, str], set] = {}
+        category_pids_interval: Dict[str, Set[str]] = {}
 
         for sample in samples_at_interval:
             major_cat, minor_cat = get_process_category(
                 sample.command_name, sample.full_command
             )
-            # ... (rest of the function is identical)
-            category_tuple = (major_cat, minor_cat)
+            category_key = f"{major_cat}_{minor_cat}"
 
             if major_cat == "Ignored":
                 continue
@@ -307,19 +280,19 @@ def _perform_monitoring_loop(
             all_samples_data_loop.append(process_row_dict)
 
             all_mem_sum_interval += metric_value_for_sum
-            category_mem_sum_interval.setdefault(category_tuple, 0)
-            category_mem_sum_interval[category_tuple] += metric_value_for_sum
-            category_pids_interval.setdefault(category_tuple, set()).add(sample.pid)
+            category_mem_sum_interval.setdefault(category_key, 0)
+            category_mem_sum_interval[category_key] += metric_value_for_sum
+            category_pids_interval.setdefault(category_key, set()).add(sample.pid)
 
             if primary_metric_to_track:
                 if (
-                    category_tuple not in category_stats_loop
+                    category_key not in category_stats_loop
                     or metric_value_for_sum
-                    > category_stats_loop[category_tuple].get(
+                    > category_stats_loop[category_key].get(
                         "peak_metric", float("-inf")
                     )
                 ):
-                    category_stats_loop[category_tuple] = {
+                    category_stats_loop[category_key] = {
                         "peak_metric": metric_value_for_sum,
                         "pid": sample.pid,
                         "command": sample.command_name,
@@ -331,11 +304,14 @@ def _perform_monitoring_loop(
             peak_overall_memory_epoch_loop = current_epoch
 
         for cat_tuple_sum, mem_sum_val_sum in category_mem_sum_interval.items():
+            # cat_tuple_sum is now a string like "Major_Minor", so we need to split it
+            # if we want to write major and minor separately to the Parquet file.
+            major_cat_from_key, minor_cat_from_key = cat_tuple_sum.split("_", 1)
             cat_sum_row_dict = _create_summary_row(
                 current_epoch,
                 "CATEGORY_SUM",
-                cat_tuple_sum[0],
-                cat_tuple_sum[1],
+                major_cat_from_key,
+                minor_cat_from_key,
                 mem_sum_val_sum,
                 metric_fields_header,
             )
@@ -386,7 +362,6 @@ def _generate_run_paths(
     current_timestamp_str: str,
 ) -> RunPaths:
     """Generates all necessary output paths for a monitoring run."""
-    # ... (Content is identical to the original)
     base_filename_part = f"{project_name}_j{parallelism_level}_mem_{collector_type}_{current_timestamp_str}"
     output_parquet_filename = f"{base_filename_part}.parquet"
     output_summary_log_filename = f"{base_filename_part}_summary.log"
@@ -399,36 +374,33 @@ def _generate_run_paths(
 
 
 def _create_memory_collector(
-    collector_type: str,
-    process_pattern: str,
-    monitoring_interval: int,
-    collector_aux_log_file: Path,
-    monitor_core_id: Optional[int],
-    taskset_available: bool,
+    context: RunContext,
 ) -> Optional[AbstractMemoryCollector]:
-    """Creates and returns a memory collector instance."""
-    # ... (Content is identical to the original)
+    """Creates and returns a memory collector instance based on the run context."""
     global active_memory_collector
     collector_kwargs: Dict[str, Any] = {
-        "collector_cpu_core": monitor_core_id,
-        "taskset_available": taskset_available,
+        "collector_cpu_core": context.monitor_core_id,
+        "taskset_available": context.taskset_available,
+        "pidstat_stderr_file": context.paths.collector_aux_log_file,
     }
     try:
-        if collector_type == "rss_pidstat":
-            collector_kwargs["pidstat_stderr_file"] = collector_aux_log_file
+        if context.collector_type == "rss_pidstat":
             active_memory_collector = RssPidstatCollector(
-                process_pattern, monitoring_interval, **collector_kwargs
+                context.process_pattern,
+                context.monitoring_interval,
+                **collector_kwargs,
             )
-        elif collector_type == "pss_psutil":
+        elif context.collector_type == "pss_psutil":
             active_memory_collector = PssPsutilCollector(
-                process_pattern, monitoring_interval, **collector_kwargs
+                context.process_pattern, context.monitoring_interval, **collector_kwargs
             )
         else:
-            logger.error(f"Unsupported collector type: {collector_type}.")
+            logger.error(f"Unknown memory collector type: '{context.collector_type}'")
             return None
     except Exception as e:
         logger.error(
-            f"Failed to initialize collector '{collector_type}': {e}", exc_info=True
+            f"Failed to initialize collector '{context.collector_type}': {e}",
+            exc_info=True,
         )
         return None
     return active_memory_collector
@@ -436,7 +408,6 @@ def _create_memory_collector(
 
 def _prepare_initial_summary_log_header(context: RunContext) -> List[str]:
     """Prepares the header content for the summary log file using a context object."""
-    # ... (Content is identical to the original, but uses context object)
     header_content: List[str] = []
     header_content.append("=" * 80)
     header_content.append(f"Project: {context.project_name}")
@@ -503,14 +474,13 @@ def _prepare_actual_clean_command(
 def _start_stream_reader_thread(
     pipe: Optional[IO[str]],
     stream_name: str,
-    project_name: str,
-    parallelism_level: int,
+    context: RunContext,
     output_list: List[str],
 ) -> Optional[threading.Thread]:
     """Creates and starts a daemon thread to read from a subprocess stream."""
     if not pipe:
         return None
-    log_prefix = f"[{project_name}-j{parallelism_level} {stream_name}] "
+    log_prefix = f"[{context.project_name}-j{context.parallelism_level} {stream_name}] "
     thread = threading.Thread(
         target=_stream_output,
         args=(pipe, log_prefix, output_list),
@@ -537,22 +507,21 @@ def _stream_output(
         logger.error(f"{prefix}Unexpected error in _stream_output: {e}", exc_info=True)
     finally:
         if pipe and not pipe.closed:
-            try:
-                pipe.close()
-            except Exception:
-                pass
+            pass
 
 
 def _run_and_log_command_to_summary(
+    context: RunContext,
     cmd_str: str,
     cmd_desc: str,
-    cwd_path: Path,
     shell_bool: bool,
-    summary_file: Path,
     executable_shell: Optional[str] = None,
 ) -> int:
     """Runs a command and logs its execution details to the summary file."""
-    # ... (Content is identical to the original)
+    # Get cwd_path and summary_file from the context object.
+    cwd_path = context.project_dir
+    summary_file = context.paths.output_summary_log_file
+
     logger.info(f"Executing {cmd_desc} command: {cmd_str} in {cwd_path}")
     with open(summary_file, "a") as f_s:
         f_s.write(f"\n--- {cmd_desc} Command ---\n")
@@ -570,21 +539,20 @@ def _run_and_log_command_to_summary(
 
 
 def _execute_clean_step(
-    setup_cmd_template: str,
-    clean_cmd_template: str,
-    project_dir: Path,
-    summary_file: Path,
-    description: str,
+    context: RunContext, project_config: ProjectConfig, description: str
 ) -> None:
     """Prepares and executes a clean command, logging the process."""
-    # ... (Content is identical to the original)
-    if not clean_cmd_template:
+    if not project_config.clean_command_template:
         return
     actual_clean_cmd, executable_shell = _prepare_actual_clean_command(
-        setup_cmd_template, clean_cmd_template
+        project_config.setup_command_template, project_config.clean_command_template
     )
     _run_and_log_command_to_summary(
-        actual_clean_cmd, description, project_dir, True, summary_file, executable_shell
+        context=context,
+        cmd_str=actual_clean_cmd,
+        cmd_desc=description,
+        shell_bool=True,
+        executable_shell=executable_shell,
     )
 
 
@@ -592,17 +560,14 @@ def _execute_clean_step(
 
 
 def _compile_and_write_final_summary_and_aux_logs(
-    summary_file_path: Path,
+    context: RunContext,
+    results: MonitoringResults,
     build_exit_code: int,
     duration_float: float,
     duration_formatted: str,
     primary_metric: Optional[str],
-    results: MonitoringResults,
-    collector_type_str: str,
-    aux_log_file_path: Path,
 ) -> None:
     """Compiles the final summary statistics and writes them to the log file and console."""
-    # ... (Content is identical to the original)
     final_summary_log_lines: List[str] = []
     final_summary_log_lines.append("\n--- Build & Monitoring Summary ---")
     final_summary_log_lines.append(
@@ -664,20 +629,20 @@ def _compile_and_write_final_summary_and_aux_logs(
 
     final_summary_log_lines.append("--- End Summary ---")
 
-    with open(summary_file_path, "a") as f_summary:
+    with open(context.paths.output_summary_log_file, "a") as f_summary:
         f_summary.write("\n")
         if (
-            collector_type_str == "rss_pidstat"
-            and aux_log_file_path.exists()
-            and aux_log_file_path.stat().st_size > 0
+            context.collector_type == "rss_pidstat"
+            and context.paths.collector_aux_log_file.exists()
+            and context.paths.collector_aux_log_file.stat().st_size > 0
         ):
             f_summary.write("\n--- Collector Auxiliary Log Output ---\n")
             try:
-                with open(aux_log_file_path, "r") as f_aux:
+                with open(context.paths.collector_aux_log_file, "r") as f_aux:
                     f_summary.write(f_aux.read())
                 f_summary.write("--- End Collector Auxiliary Log Output ---\n\n")
                 try:
-                    aux_log_file_path.unlink()
+                    context.paths.collector_aux_log_file.unlink()
                 except OSError as e_del:
                     logger.warning(f"Could not delete collector aux log: {e_del}")
             except Exception as e_read_aux:
@@ -691,22 +656,22 @@ def _compile_and_write_final_summary_and_aux_logs(
 
 
 def _write_monitoring_data_to_parquet(
-    all_samples_data: List[Dict[str, Any]],
-    output_parquet_file: Path,
+    results: MonitoringResults, context: RunContext
 ) -> None:
     """Writes the collected monitoring data to a Parquet file."""
-    # ... (Content is identical to the original, minus logging context args)
-    if not all_samples_data:
+    if not results.all_samples_data:
         logger.info("No data collected to write to Parquet file.")
         return
     try:
-        df_to_save = pl.DataFrame(all_samples_data)
-        output_parquet_file.parent.mkdir(parents=True, exist_ok=True)
-        df_to_save.write_parquet(output_parquet_file)
-        logger.info(f"Monitoring data successfully written to {output_parquet_file}")
+        df_to_save = pl.DataFrame(results.all_samples_data)
+        output_file = context.paths.output_parquet_file
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        df_to_save.write_parquet(output_file)
+        logger.info(f"Monitoring data successfully written to {output_file}")
     except Exception as e:
         logger.error(
-            f"Failed to write Parquet file {output_parquet_file}: {e}", exc_info=True
+            f"Failed to write Parquet file {context.paths.output_parquet_file}: {e}",
+            exc_info=True,
         )
 
 
