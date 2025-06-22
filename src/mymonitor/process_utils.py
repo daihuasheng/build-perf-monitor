@@ -200,7 +200,14 @@ def get_process_category(cmd_name: str, cmd_full: str) -> Tuple[str, str]:
 
         if processed_command_part:
             unwrapped_cmd_full = processed_command_part
-            unwrapped_cmd_name = unwrapped_cmd_full.split()[0]
+            # Use shlex.split for robust parsing of wrapped commands.
+            # This correctly handles commands with quoted paths that contain spaces.
+            try:
+                unwrapped_cmd_parts = shlex.split(unwrapped_cmd_full)
+                unwrapped_cmd_name = unwrapped_cmd_parts[0] if unwrapped_cmd_parts else ""
+            except ValueError:
+                # Fallback for shlex errors (e.g., unmatched quotes)
+                unwrapped_cmd_name = unwrapped_cmd_full.split()[0]
 
     # Use the potentially unwrapped command for classification.
     current_cmd_name = unwrapped_cmd_name
