@@ -10,6 +10,7 @@ from mymonitor.main import main_cli
 # Path to the fake build script
 FAKE_BUILD_SCRIPT_PATH = (Path(__file__).parent / "fake_build_script.sh").resolve()
 
+
 @pytest.fixture
 def setup_test_config_files(tmp_path: Path) -> Path:
     """
@@ -57,12 +58,12 @@ def setup_test_config_files(tmp_path: Path) -> Path:
     main_config_data = {
         "monitor": {
             "interval_seconds": 1,
-            "default_jobs": [1], # Keep it simple for tests
+            "default_jobs": [1],  # Keep it simple for tests
             "metric_type": "pss_psutil",
-            "monitor_core": -1, # Disable pinning for simplicity in test
+            "monitor_core": -1,  # Disable pinning for simplicity in test
             "build_cores_policy": "none",
             "skip_plots": True,
-            "log_root_dir": str(tmp_path / "logs_output")
+            "log_root_dir": str(tmp_path / "logs_output"),
         },
         "paths": {
             "projects_config": "projects.toml",
@@ -75,6 +76,7 @@ def setup_test_config_files(tmp_path: Path) -> Path:
 
     return main_config_toml_path
 
+
 @pytest.fixture
 def temp_log_dir(tmp_path: Path) -> Path:
     """Creates a temporary directory for logs."""
@@ -82,10 +84,9 @@ def temp_log_dir(tmp_path: Path) -> Path:
     log_dir.mkdir()
     return log_dir
 
+
 def test_basic_monitoring_run(
-    setup_test_config_files: Path, # Use the new fixture
-    monkeypatch,
-    capsys
+    setup_test_config_files: Path, monkeypatch, capsys  # Use the new fixture
 ):
     """
     Tests a basic run of the mymonitor CLI with a fake build using the new TOML config system.
@@ -93,7 +94,9 @@ def test_basic_monitoring_run(
     """
     # Ensure the fake build script is executable
     if not os.access(FAKE_BUILD_SCRIPT_PATH, os.X_OK):
-        pytest.skip(f"Fake build script {FAKE_BUILD_SCRIPT_PATH} is not executable. Run chmod +x on it.")
+        pytest.skip(
+            f"Fake build script {FAKE_BUILD_SCRIPT_PATH} is not executable. Run chmod +x on it."
+        )
 
     # --- Monkeypatching the new config system ---
     # 1. Force the config module to use our temporary config.toml file.
@@ -105,7 +108,7 @@ def test_basic_monitoring_run(
     # Simulate command-line arguments for main_cli.
     # Note: Most config is now in the TOML files, so we don't need many CLI args.
     test_args = [
-        "mymonitor", # Script name, usually sys.argv[0]
+        "mymonitor",  # Script name, usually sys.argv[0]
     ]
     monkeypatch.setattr(sys, "argv", test_args)
 
@@ -117,16 +120,22 @@ def test_basic_monitoring_run(
     # --- Verification ---
     # The log root dir is now defined inside our temporary config.toml
     log_root_dir = setup_test_config_files.parent.parent / "logs_output"
-    
+
     # Check that a run-specific directory was created inside the log root
     run_dirs = list(log_root_dir.glob("run_*"))
-    assert len(run_dirs) == 1, f"Expected 1 run directory in {log_root_dir}, found {len(run_dirs)}"
+    assert (
+        len(run_dirs) == 1
+    ), f"Expected 1 run directory in {log_root_dir}, found {len(run_dirs)}"
     run_specific_output_dir = run_dirs[0]
     assert run_specific_output_dir.is_dir()
 
     # Check for the Parquet file
-    parquet_files = list(run_specific_output_dir.glob("FakeProject_j1_mem_pss_psutil_*.parquet"))
-    assert len(parquet_files) == 1, f"Expected 1 Parquet file, found {len(parquet_files)} in {run_specific_output_dir}"
+    parquet_files = list(
+        run_specific_output_dir.glob("FakeProject_j1_mem_pss_psutil_*.parquet")
+    )
+    assert (
+        len(parquet_files) == 1
+    ), f"Expected 1 Parquet file, found {len(parquet_files)} in {run_specific_output_dir}"
     output_parquet_file = parquet_files[0]
     assert output_parquet_file.exists()
     assert output_parquet_file.stat().st_size > 0, "Parquet file is empty"
@@ -135,14 +144,24 @@ def test_basic_monitoring_run(
     try:
         df = pl.read_parquet(output_parquet_file)
         assert df.height > 0, "Parquet file loaded but contains no data rows"
-        assert "PROCESS" in df["Record_Type"].unique().to_list(), "PROCESS records missing"
-        assert "ALL_SUM" in df["Record_Type"].unique().to_list(), "ALL_SUM records missing"
+        assert (
+            "PROCESS" in df["Record_Type"].unique().to_list()
+        ), "PROCESS records missing"
+        assert (
+            "ALL_SUM" in df["Record_Type"].unique().to_list()
+        ), "ALL_SUM records missing"
     except Exception as e:
-        pytest.fail(f"Failed to read or validate Parquet file {output_parquet_file}: {e}")
+        pytest.fail(
+            f"Failed to read or validate Parquet file {output_parquet_file}: {e}"
+        )
 
     # Check for the summary log file
-    summary_files = list(run_specific_output_dir.glob("FakeProject_j1_mem_pss_psutil_*_summary.log"))
-    assert len(summary_files) == 1, f"Expected 1 summary log file, found {len(summary_files)} in {run_specific_output_dir}"
+    summary_files = list(
+        run_specific_output_dir.glob("FakeProject_j1_mem_pss_psutil_*_summary.log")
+    )
+    assert (
+        len(summary_files) == 1
+    ), f"Expected 1 summary log file, found {len(summary_files)} in {run_specific_output_dir}"
     summary_log_file = summary_files[0]
     assert summary_log_file.exists()
     assert summary_log_file.stat().st_size > 0, "Summary log file is empty"
@@ -150,5 +169,9 @@ def test_basic_monitoring_run(
     # Check content of summary log for build success
     with open(summary_log_file, "r") as f:
         summary_content = f.read()
-        assert "Final Build Exit Code: 0" in summary_content, "Build did not exit successfully according to summary log"
-        assert "Fake build process finished." in summary_content, "Fake build output not found in summary log"
+        assert (
+            "Final Build Exit Code: 0" in summary_content
+        ), "Build did not exit successfully according to summary log"
+        assert (
+            "Fake build process finished." in summary_content
+        ), "Fake build output not found in summary log"

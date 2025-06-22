@@ -43,6 +43,8 @@ CLASSIFICATION_TEST_CASES = [
         "GCCInternalCompiler",
     ),
     ("clang", "clang -cc1 -O2 ...", "CPP_Compile", "ClangInternalCompiler"),
+    ("go", "/usr/bin/go tool compile -o ...", "Go_Compile", "GoInternalCompiler"),
+    ("go", "/usr/bin/go tool link -o ...", "Go_Link", "GoInternalLinker"),
     ("ninja", "ninja -C out/Default chrome", "BuildSystem", "Ninja"),
     (
         "soong_build",
@@ -50,17 +52,29 @@ CLASSIFICATION_TEST_CASES = [
         "BuildSystem",
         "SoongBuild",
     ),
+    (
+        "sbox",
+        "/path/to/out/host/linux-x86/bin/sbox --sandbox-path ...",
+        "BuildSystem",
+        "SoongSandbox",
+    ),
     ("ld", "/usr/bin/ld -o my_app main.o", "CPP_Link", "DirectLinker"),
     ("as", "/usr/bin/as -o main.o main.s", "CPP_Assemble", "DirectAssembler"),
     # --- Medium Priority: Driver-based actions ---
-    ("gcc", "gcc -E source.c", "CPP_Driver", "Driver_Preprocessing"),
-    ("g++", "g++ -S source.cpp", "CPP_Driver", "Driver_SourceToAsm"),
-    ("clang++", "clang++ -c my_file.s -o my_file.o", "CPP_Driver", "Driver_AsmToObj"),
-    ("cc", "cc -c main.c -o main.o", "CPP_Driver", "Driver_Compile"),
-    ("gcc", "gcc main.o utils.o -o my_program", "CPP_Driver", "Driver_Link"),
+    ("gcc", "gcc -E source.c", "CPP_Preprocess", "Driver_Preprocessing"),
+    ("g++", "g++ -S source.cpp", "CPP_Assemble", "Driver_SourceToAsm"),
+    ("cc", "cc -c main.c -o main.o", "CPP_Compile", "Driver_Compile"),
+    ("gcc", "gcc main.o utils.o -o my_program", "CPP_Link", "Driver_Link"),
+    (
+        "compile",
+        "/some/wrapper/compile gcc -c main.c",
+        "CPP_Compile",
+        "GenericCompileWrapper",
+    ),
     # --- Low Priority: Fallback Drivers ---
     ("gcc", "gcc --version", "CPP_Driver", "Driver_GCC_Fallback"),
     ("clang", "clang --help", "CPP_Driver", "Driver_Clang_Fallback"),
+    ("go", "go version", "Go_Compile", "Go_Compiler_Fallback"),
     # --- Java and Rust ---
     (
         "java",
@@ -68,35 +82,39 @@ CLASSIFICATION_TEST_CASES = [
         "Java_Compile",
         "Java_CompileAndDex",
     ),
-    ("rustc", "rustc --crate-name my_lib src/lib.rs", "Rust_Compile", "Rust_Compiler"),
+    ("javac", "/path/to/jdk/bin/javac MyClass.java", "Java_Compile", "Javac"),
+    (
+        "rustc",
+        "/home/.rustup/toolchains/stable/bin/rustc --crate-name my_lib src/lib.rs",
+        "Rust_Compile",
+        "Rust_Compiler",
+    ),
     # --- Scripting ---
     ("python3.12", "python3.12 my_script.py --arg", "Scripting", "Python"),
     ("bash", "bash /path/to/my_script.sh --arg1", "Scripting", "ShellScriptFile"),
     ("my_script.sh", "./my_script.sh", "Scripting", "ShellScriptFile"),
     (
-        "bash",
-        "bash -c 'echo hello'",
-        "OSUtilities",
-        "Generic",
-    ),  # This should NOT match sh -c
-    (
         "sh",
         "sh -c 'gcc -c main.c'",
-        "CPP_Driver",
+        "CPP_Compile",
         "Driver_Compile",
     ),  # Test sh -c unwrapping
-    # --- Utilities and Other Tools ---
-    ("ar", "ar rcs libmylib.a file1.o file2.o", "DevelopmentTools", "ArchiveAR"),
-    ("zip", "zip -r archive.zip my_folder", "DevelopmentTools", "ArchiveZIP"),
-    ("aapt2", "aapt2 link ...", "DevelopmentTools", "AndroidResource"),
-    ("cp", "cp file1.txt file2.txt", "OSUtilities", "Generic"),
-    # --- Ignored and Uncategorized ---
+    # --- Utilities and Other Tools (with full paths) ---
+    ("ar", "/usr/bin/ar rcs libmylib.a file1.o", "DevelopmentTools", "ArchiveAR"),
+    ("zip", "/usr/bin/zip -r archive.zip my_folder", "DevelopmentTools", "ArchiveZIP"),
     (
-        "code",
-        "/usr/share/code/bin/../code --some-arg",
-        "Ignored",
-        "VSCodeServer",
-    ),  # Example based on contains rule
+        "aapt2",
+        "/path/to/android/sdk/aapt2 link ...",
+        "DevelopmentTools",
+        "AndroidSDKTools",
+    ),
+    ("cp", "/bin/cp file1.txt file2.txt", "OSUtilities", "Generic_Path"),
+    ("_mkdir", "_mkdir /tmp/foo", "OSUtilities", "Generic_Path"),  # Test with prefix
+    # --- Testing tools ---
+    ("gotestmain", "/path/to/gotestmain -test.v", "Testing", "GoTestRunner"),
+    ("mytest.test", "./mytest.test -test.run TestMyFeature", "Testing", "GoTestBinary"),
+    # --- Ignored and Uncategorized ---
+    ("code", "/usr/share/code/bin/../code --some-arg", "Ignored", "VSCodeServer"),
     ("my_custom_tool", "/opt/bin/my_custom_tool", "Other", "Other_my_custom_tool"),
 ]
 
