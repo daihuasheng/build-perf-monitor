@@ -203,11 +203,18 @@ def run_and_monitor_build(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            # shell=False is used because we are passing a list of arguments,
-            # which is safer and avoids shell quoting issues.
             shell=False,
             bufsize=1,
         )
+        # The build process PID is now known.
+        run_context.build_process_pid = current_build_proc.pid
+
+        # Set the PID on the collector instance now that it's available.
+        # This enables the "descendants-first" optimization in PssPsutilCollector.
+        if local_active_memory_collector and hasattr(
+            local_active_memory_collector, "build_process_pid"
+        ):
+            local_active_memory_collector.build_process_pid = current_build_proc.pid
 
         active_memory_collector = local_active_memory_collector
 
@@ -256,9 +263,7 @@ def run_and_monitor_build(
 
         # Now that threads are joined, it's safe to write the captured output.
         with open(run_paths.output_summary_log_file, "a") as f_summary:
-            f_summary.write(
-                f"\nBuild End Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            )
+            f_summary.write(f"\nBuild End Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
             _write_stream_to_summary(f_summary, "STDOUT", build_stdout_lines)
             _write_stream_to_summary(f_summary, "STDERR", build_stderr_lines)
 
@@ -330,6 +335,11 @@ def _perform_monitoring_loop(
     category_peak_sum_loop: Dict[str, int] = {}
     category_pid_set_loop: Dict[str, Set[str]] = {}
 
+    # Cache for process categorization results.
+    # This avoids re-calculating the category for the same process command repeatedly.
+    # The key is a tuple (command_name, full_command), and the value is (major_cat, minor_cat).
+    category_cache: Dict[Tuple[str, str], Tuple[str, str]] = {}
+
     logger.info("Starting monitoring loop...")
 
     for samples_at_interval in active_memory_collector.read_samples():
@@ -339,9 +349,17 @@ def _perform_monitoring_loop(
         category_pids_interval: Dict[str, Set[str]] = {}
 
         for sample in samples_at_interval:
-            major_cat, minor_cat = get_process_category(
-                sample.command_name, sample.full_command
-            )
+            # Use the cache to get the process category.
+            cache_key = (sample.command_name, sample.full_command)
+            if cache_key in category_cache:
+                major_cat, minor_cat = category_cache[cache_key]
+            else:
+                # If not in cache, calculate it and store the result.
+                major_cat, minor_cat = get_process_category(
+                    sample.command_name, sample.full_command
+                )
+                category_cache[cache_key] = (major_cat, minor_cat)
+
             category_key = f"{major_cat}_{minor_cat}"
 
             if major_cat == "Ignored":
@@ -473,12 +491,12 @@ def _create_memory_collector(context: RunContext) -> Optional[AbstractMemoryColl
         "pidstat_stderr_file": context.paths.collector_aux_log_file,
     }
     try:
-        if context.collector_type == "rss_pidstat":
-            active_memory_collector = RssPidstatCollector(
+        if context.collector_type == "pss_psutil":
+            active_memory_collector = PssPsutilCollector(
                 context.process_pattern, context.monitoring_interval, **collector_kwargs
             )
-        elif context.collector_type == "pss_psutil":
-            active_memory_collector = PssPsutilCollector(
+        elif context.collector_type == "rss_pidstat":
+            active_memory_collector = RssPidstatCollector(
                 context.process_pattern, context.monitoring_interval, **collector_kwargs
             )
         else:

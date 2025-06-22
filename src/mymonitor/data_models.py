@@ -144,6 +144,8 @@ class RunContext:
     # --- Generated paths for the run ---
     paths: RunPaths
 
+    build_process_pid: Optional[int] = None
+
 
 @dataclass
 class MonitoringResults:
