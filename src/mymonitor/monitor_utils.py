@@ -21,11 +21,12 @@ Key responsibilities include:
 import logging
 import polars as pl
 import psutil
+import shlex
 import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, IO, List, Optional, Tuple, Set
+from typing import Any, Dict, IO, List, Optional, Tuple, Set, Union
 
 # Import local modules
 from .data_models import MonitoringResults, ProjectConfig, RunContext, RunPaths
@@ -154,6 +155,8 @@ def run_and_monitor_build(
     start_time_seconds: Optional[float] = None
     monitoring_results: Optional[MonitoringResults] = None
     primary_metric_to_track: Optional[str] = None
+    stdout_thread: Optional[threading.Thread] = None
+    stderr_thread: Optional[threading.Thread] = None
 
     try:
         metric_fields_header = local_active_memory_collector.get_metric_fields()
@@ -162,24 +165,51 @@ def run_and_monitor_build(
         )
         local_active_memory_collector.start()
 
-        cmd_list_for_popen = (
-            build_command_prefix.split() if build_command_prefix else []
-        ) + full_build_command_for_popen.split()
+        # --- Command Execution Logic (Refactored) ---
+        # This logic constructs the command to be executed as a list of arguments.
+        # Using a list and `shell=False` is the safest way to handle commands,
+        # especially complex ones involving setup scripts, as it avoids shell
+        # injection vulnerabilities and quoting issues.
+        final_command_to_execute: List[str]
+
+        if setup_command_template:
+            # For complex builds (e.g., AOSP) that require a setup script, we
+            # explicitly invoke a shell to handle environment sourcing and '&&'.
+            # The command becomes: [taskset ..., /bin/bash, -c, "source ... && build ..."]
+            command_list = ["/bin/bash", "-c", actual_build_command]
+            if build_command_prefix:
+                final_command_to_execute = (
+                    build_command_prefix.strip().split() + command_list
+                )
+            else:
+                final_command_to_execute = command_list
+        else:
+            # For simple builds, we construct the argument list directly.
+            # e.g., [taskset, -c, 1-7, make, -j16]
+            final_command_to_execute = (
+                build_command_prefix.split() if build_command_prefix else []
+            ) + full_build_command_for_popen.split()
 
         with open(run_paths.output_summary_log_file, "a") as f_summary:
             f_summary.write("--- Build Command Execution ---\n")
-            f_summary.write(f"Command: {' '.join(cmd_list_for_popen)}\n")
+            # Use shlex.join for a shell-safe representation of the command for logging.
+            log_cmd = shlex.join(final_command_to_execute)
+            f_summary.write(f"Command: {log_cmd}\n")
 
         start_time_seconds = time.monotonic()
         current_build_proc = subprocess.Popen(
-            cmd_list_for_popen,
+            final_command_to_execute,
             cwd=project_dir,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            # shell=False is used because we are passing a list of arguments,
+            # which is safer and avoids shell quoting issues.
             shell=False,
             bufsize=1,
         )
+
+        active_memory_collector = local_active_memory_collector
 
         stdout_thread = _start_stream_reader_thread(
             current_build_proc.stdout, "STDOUT", run_context, build_stdout_lines
@@ -197,17 +227,6 @@ def run_and_monitor_build(
 
         if current_build_proc:
             build_exit_code = current_build_proc.wait()
-            with open(run_paths.output_summary_log_file, "a") as f_summary:
-                f_summary.write(
-                    f"Build End Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                )
-                f_summary.write(f"Build Exit Code: {build_exit_code}\n")
-                if stdout_thread:
-                    stdout_thread.join(timeout=1)
-                if stderr_thread:
-                    stderr_thread.join(timeout=1)
-                _write_stream_to_summary(f_summary, "STDOUT", build_stdout_lines)
-                _write_stream_to_summary(f_summary, "STDERR", build_stderr_lines)
 
     finally:
         # --- 3. Cleanup and Finalization ---
@@ -227,6 +246,21 @@ def run_and_monitor_build(
         formatted_duration = time.strftime(
             "%H:%M:%S", time.gmtime(duration_seconds_float)
         )
+
+        # Wait for stream reader threads to finish *before* writing logs.
+        # This ensures all stdout/stderr from the build is captured.
+        if stdout_thread:
+            stdout_thread.join()
+        if stderr_thread:
+            stderr_thread.join()
+
+        # Now that threads are joined, it's safe to write the captured output.
+        with open(run_paths.output_summary_log_file, "a") as f_summary:
+            f_summary.write(
+                f"\nBuild End Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            )
+            _write_stream_to_summary(f_summary, "STDOUT", build_stdout_lines)
+            _write_stream_to_summary(f_summary, "STDERR", build_stderr_lines)
 
         if monitoring_results:
             _compile_and_write_final_summary_and_aux_logs(
