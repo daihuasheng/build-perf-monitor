@@ -53,6 +53,15 @@ match_type = "exact"
 pattern = "code"
 comment = "Ignore VS Code editor processes by command name."
 
+[[rules]]
+major_category = "Ignored"
+category = "MyMonitor"
+priority = 999
+match_field = "current_cmd_name"
+match_type = "exact"
+pattern = "mymonitor"
+comment = "Ignore the monitoring tool's own process."
+
 # Priority 150-250 (High - Unambiguous Processes)
 [[rules]]
 major_category = "BuildSystem"
@@ -136,13 +145,31 @@ pattern = "bazel"
 comment = "Bazel client."
 
 [[rules]]
+major_category = "Java_Compile"
+category = "SoongJavacWrapper"
+priority = 163
+match_field = "current_cmd_name"
+match_type = "regex"
+pattern = "(?:^|/)soong_javac_wrapper$"
+comment = "AOSP's specific wrapper script for Java compilation."
+
+[[rules]]
+major_category = "Java_Compile"
+category = "Javac"
+priority = 162
+match_field = "current_cmd_name"
+match_type = "regex"
+pattern = "(?:^|/)javac$"
+comment = "The Java compiler, matching its name or full path."
+
+[[rules]]
 major_category = "CPP_Compile"
 category = "ClangInternalCompiler"
 priority = 161
 match_field = "current_cmd_full"
 match_type = "contains"
 pattern = " -cc1 "
-comment = "Clang running in internal compiler/worker mode."
+comment = "Clang running in internal compiler/worker mode. This is a pure compilation task."
 
 [[rules]]
 major_category = "BuildSystem"
@@ -160,7 +187,34 @@ priority = 160
 match_field = "current_cmd_name"
 match_type = "in_list"
 patterns = ["cc1", "cc1plus"]
-comment = "Actual GCC C/C++ compiler internals."
+comment = "Actual GCC C/C++ compiler internals. This is a pure compilation task."
+
+[[rules]]
+major_category = "Go_Compile"
+category = "GoInternalCompiler"
+priority = 159
+match_field = "current_cmd_full"
+match_type = "regex"
+pattern = "(?:^|/)go(?:\\.real)?\\s+tool\\s+compile"
+comment = "Go internal compiler."
+
+[[rules]]
+major_category = "Go_Link"
+category = "GoInternalLinker"
+priority = 158
+match_field = "current_cmd_full"
+match_type = "regex"
+pattern = "(?:^|/)go(?:\\.real)?\\s+tool\\s+link"
+comment = "Go internal linker."
+
+[[rules]]
+major_category = "BuildSystem"
+category = "SoongSandbox"
+priority = 158
+match_field = "current_cmd_name"
+match_type = "regex"
+pattern = "(?:^|/)sbox$"
+comment = "Soong's sandboxing tool (sbox) used to isolate build actions."
 
 [[rules]]
 major_category = "BuildSystem"
@@ -190,54 +244,61 @@ pattern = "as"
 comment = "C/C++ Assembler."
 
 # Priority 100-149 (Medium - Specific Actions)
-
 [[rules]]
-major_category = "CPP_Driver"
+major_category = "CPP_Preprocess"
 category = "Driver_Preprocessing"
 priority = 140
 match_field = "current_cmd_full"
 match_type = "regex"
 pattern = '^(?:.*/)?(?:clang\+\+|g\+\+|clang|gcc|cc)(?=\s|$).*?\s-E(\s|$)'
-comment = "Driver (clang, gcc, etc.) performing preprocessing (-E flag)."
+comment = "A driver performing preprocessing only (-E flag)."
 
 [[rules]]
-major_category = "CPP_Driver"
+major_category = "CPP_Assemble"
 category = "Driver_SourceToAsm"
 priority = 135
 match_field = "current_cmd_full"
 match_type = "regex"
 pattern = '^(?:.*/)?(?:clang\+\+|g\+\+|clang|gcc|cc)(?=\s|$).*?\s-S(\s|$)'
-comment = "Driver (clang, gcc, etc.) compiling source to assembly (-S flag)."
+comment = "A driver compiling source to assembly (-S flag)."
 
 [[rules]]
-major_category = "CPP_Driver"
-category = "Driver_AsmToObj"
-priority = 130
-match_field = "current_cmd_full"
-match_type = "regex"
-pattern = '^(?:.*/)?(?:clang\+\+|g\+\+|clang|gcc|cc)(?=\s|$)(?=.*?\s\S+\.(?:s|S)\b).*?\s-c(\s|$)'
-comment = "Driver (clang, gcc, etc.) compiling an assembly file (.s, .S) to an object file (-c flag)."
-
-[[rules]]
-major_category = "CPP_Driver"
+major_category = "CPP_Compile"
 category = "Driver_Compile"
 priority = 125
 match_field = "current_cmd_full"
 match_type = "regex"
 pattern = '^(?:.*/)?(?:clang\+\+|g\+\+|clang|gcc|cc)(?=\s|$)(?!.*?\.s\b)(?!.*?\.S\b).*?\s-c(\s|$)'
-comment = "Driver (clang, gcc, etc.) compiling a source file (not .s/.S) to an object file (-c flag)."
+comment = "VERIFIED: A driver (clang, gcc) whose primary task is to compile a source file (-c). Its memory usage represents the compilation cost."
 
 [[rules]]
-major_category = "CPP_Driver"
+major_category = "CPP_Compile"
+category = "GenericCompileWrapper"
+priority = 124
+match_field = "current_cmd_name"
+match_type = "regex"
+pattern = "(?:^|/)compile$"
+comment = "Catches generic 'compile' scripts or symlinks, assuming compilation intent."
+
+[[rules]]
+major_category = "CPP_Link"
 category = "Driver_Link"
 priority = 120
 match_field = "current_cmd_full"
 match_type = "regex"
 pattern = '^(?:.*/)?(?:clang\+\+|g\+\+|clang|gcc|cc)(?=\s|$)(?!.*?(\s-c|\s-S|\s-E)(\s|$)).*?\s-o\s'
-comment = "Driver (clang, gcc, etc.) performing linking (has -o, but not -c, -S, or -E)."
+comment = "VERIFIED: A driver (clang, gcc) whose primary task is to link object files. Its memory usage represents the linking cost."
+
+[[rules]]
+major_category = "CPP_Link"
+category = "GenericLinkWrapper"
+priority = 119
+match_field = "current_cmd_name"
+match_type = "regex"
+pattern = "(?:^|/)link$"
+comment = "Catches generic 'link' scripts or symlinks, assuming linking intent."
 
 # Priority 50-99 (Low - Fallback / General Purpose)
-
 [[rules]]
 major_category = "CPP_Driver"
 category = "Driver_Clang_Fallback"
@@ -245,7 +306,7 @@ priority = 85
 match_field = "current_cmd_name"
 match_type = "in_list"
 patterns = ["clang", "clang++", "cc"]
-comment = "Clang/cc driver process. Should be matched only if not an internal compiler call."
+comment = "VERIFIED: A Clang/cc driver process that was NOT matched by a more specific rule (like compile or link). This is a generic driver."
 
 [[rules]]
 major_category = "CPP_Driver"
@@ -254,7 +315,7 @@ priority = 84
 match_field = "current_cmd_name"
 match_type = "in_list"
 patterns = ["gcc", "g++"]
-comment = "GCC/g++ driver process. Should be matched only if not an internal compiler call."
+comment = "VERIFIED: A GCC/g++ driver process that was NOT matched by a more specific rule. This is a generic driver."
 
 [[rules]]
 major_category = "Java_Compile"
@@ -275,13 +336,31 @@ pattern = '(?:^|/)java\b'
 comment = "Catches java if it's a path, if not caught by cmd_name 'java'."
 
 [[rules]]
+major_category = "Go_Compile"
+category = "Go_Compiler_Fallback"
+priority = 68
+match_field = "current_cmd_name"
+match_type = "exact"
+pattern = "go"
+comment = "Fallback for Go compiler driver if not matched by more specific rules."
+
+[[rules]]
 major_category = "Rust_Compile"
 category = "Rust_Compiler"
 priority = 65
 match_field = "current_cmd_name"
-match_type = "exact"
-pattern = "rustc"
-comment = "Rust compiler."
+match_type = "regex"
+pattern = "(?:^|/)rustc$"
+comment = "Rust compiler, matching its name or full path."
+
+[[rules]]
+major_category = "Rust_Compile"
+category = "Rust_Linter"
+priority = 64
+match_field = "current_cmd_name"
+match_type = "regex"
+pattern = "(?:^|/)clippy-driver$"
+comment = "Rust linter tool."
 
 [[rules]]
 major_category = "Scripting"
@@ -304,26 +383,12 @@ comment = "Interactive shells or direct shell command execution."
 # Priority < 50 (Very Low - Common Utilities)
 [[rules]]
 major_category = "OSUtilities"
-category = "Generic"
-priority = 50 # Note: This is higher than other utilities because it's a large, common group.
+category = "Generic_Path"
+priority = 49
 match_field = "current_cmd_name"
-match_type = "in_list"
-patterns = [
-  "mkdir", "rm", "cp", "mv", "cat", "sed", "echo", "touch", "ln", "find",
-  "grep", "awk", "tr", "sort", "uniq", "head", "tail", "basename", "dirname",
-  "readlink", "stat", "chmod", "chown", "expr", "sleep", "date",
-  "unzip", "xz", "tar", "gzip", "bzip2", "patch"
-]
-comment = "Common OS utility commands."
-
-[[rules]]
-major_category = "OSUtilities"
-category = "TestCommand"
-priority = 48
-match_field = "current_cmd_name"
-match_type = "exact"
-pattern = "test"
-comment = "OS 'test' command."
+match_type = "regex"
+pattern = "(?:^|/|_)((mkdir|rm|cp|mv|cat|sed|echo|touch|ln|find|grep|awk|tr|sort|uniq|head|tail|basename|dirname|readlink|stat|chmod|chown|expr|sleep|date|unzip|xz|tar|gzip|bzip2|patch|cd))$"
+comment = "Fallback for common OS utilities when their name appears at the end of a path or with a prefix like '_'."
 
 [[rules]]
 major_category = "Scripting"
@@ -331,59 +396,95 @@ category = "Python"
 priority = 45
 match_field = "current_cmd_name"
 match_type = "regex"
-pattern = '^python[0-9._-]*$'
-comment = "Matches python interpreters (e.g., python, python3, python3.12)."
+pattern = "^python[0-9._-]*|py3-launcher$"
+comment = "Matches python interpreters (e.g., python3.12) and launchers."
 
 [[rules]]
 major_category = "DevelopmentTools"
-category = "AndroidResource"
-priority = 40
+category = "AndroidSDKTools"
+priority = 42
 match_field = "current_cmd_name"
-match_type = "in_list"
-patterns = ["aapt", "aapt2"]
-comment = "Android Asset Packaging Tool."
+match_type = "regex"
+pattern = "(?:^|/)(aapt|aapt2|d8|r8|aidl|hidl-gen|dex2oat|dex2oatd|veridex)$"
+comment = "Common Android SDK and build-related tools like aapt, aapt2, d8, aidl, etc."
+
+[[rules]]
+major_category = "DevelopmentTools"
+category = "CPP_ABITools"
+priority = 41
+match_field = "current_cmd_name"
+match_type = "regex"
+pattern = "(?:^|/)(header-abi-dumper|header-abi-linker)$"
+comment = "Tools for C++ ABI dumping and linking."
+
+[[rules]]
+major_category = "DevelopmentTools"
+category = "MiscDevTools"
+priority = 21
+match_field = "current_cmd_name"
+match_type = "regex"
+pattern = "(?:^|/)(bindgen|openssl|versioner|xmlnotice|bluetooth_packetgen|microfactory|microfactory_Linux|checkpass|class2ndk|hiddenapi|profman|secilc|sepolicy-check)$"
+comment = "Miscellaneous development tools, including more AOSP-specific ones."
 
 [[rules]]
 major_category = "DevelopmentTools"
 category = "ArchiveAR"
 priority = 20
 match_field = "current_cmd_name"
-match_type = "in_list"
-patterns = ["ar", "llvm-ar"]
-comment = "Archiver tool (ar, llvm-ar)."
+match_type = "regex"
+pattern = "(?:^|/)(ar|llvm-ar)$"
+comment = "Archiver tool (ar, llvm-ar), matching name or full path."
 
 [[rules]]
 major_category = "DevelopmentTools"
 category = "ArchiveZIP"
 priority = 19
 match_field = "current_cmd_name"
-match_type = "in_list"
-patterns = ["zip", "jar", "soong_zip", "zip2zip", "zipsync"]
-comment = "ZIP and JAR related tools."
+match_type = "regex"
+pattern = "(?:^|/)(zip|jar|soong_zip|zip2zip|zipsync|merge_zips)$"
+comment = "ZIP and JAR related tools, matching name or full path."
 
 [[rules]]
 major_category = "DevelopmentTools"
 category = "BinStrip"
 priority = 18
 match_field = "current_cmd_name"
-match_type = "exact"
-pattern = "strip"
-comment = "Symbol stripping tool."
+match_type = "regex"
+pattern = "(?:^|/)strip$"
+comment = "Symbol stripping tool, matching name or full path."
 
 [[rules]]
 major_category = "DevelopmentTools"
 category = "BinObjcopy"
 priority = 17
 match_field = "current_cmd_name"
-match_type = "in_list"
-patterns = ["objcopy", "llvm-objcopy"]
-comment = "Object copying and manipulation tool."
+match_type = "regex"
+pattern = "(?:^|/)(objcopy|llvm-objcopy)$"
+comment = "Object copying and manipulation tool, matching name or full path."
 
 [[rules]]
 major_category = "Testing"
-category = "GoTest"
+category = "GoTestRunner"
+priority = 11
+match_field = "current_cmd_name"
+match_type = "in_list"
+patterns = ["gotestmain", "gotestrunner"]
+comment = "Specific Go test runners used in Soong."
+
+[[rules]]
+major_category = "Testing"
+category = "GoTestBinary"
 priority = 10
 match_field = "orig_cmd_full"
 match_type = "regex"
-pattern = 'gotestrunner|(_test/.*\s-test\.|\.test(\s|$))'
-comment = "Go test runner or Go test binaries."
+pattern = '(_test/.*\s-test\.|\.test(\s|$))'
+comment = "Generic Go test binaries, matched as a last resort."
+
+[[rules]]
+major_category = "OSUtilities"
+category = "TestCommand"
+priority = 5
+match_field = "current_cmd_name"
+match_type = "in_list"
+patterns = ["test"]
+comment = "Catch-all for the 'test' command."

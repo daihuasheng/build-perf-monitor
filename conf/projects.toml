@@ -38,8 +38,8 @@ setup_command_template = "source build/envsetup.sh && lunch aosp_arm64-userdebug
 # The command template for building the project.
 build_command_template = "m -j<N>"
 
-# A regex pattern to identify processes belonging to this project's build.
-process_pattern = "make|soong_ui|soong_build|ninja|kati|javac|aapt[2]?|d8|r8|metalava|clang[^\\s-]*|ld\\.lld|lld|gcc|cc|g\\+\\+|c\\+\\+|python[0-9._-]*|bpfmt|aidl|hidl-gen|dex2oat|zip|rsync"
+# This pattern should be a superset of the tools defined in rules.toml for this project.
+process_pattern = "make|soong_ui|soong_build|ninja|kati|javac|aapt[2]?|d8|r8|metalava|clang[^\\s-]*|ld\\.lld|lld|gcc|cc|g\\+\\+|c\\+\\+|python[0-9._-]*|bpfmt|aidl|hidl-gen|dex2oat|zip|rsync|go|rustc|sbox|ar|strip"
 
 # The command to clean the project build artifacts.
 clean_command_template = "m clean"
