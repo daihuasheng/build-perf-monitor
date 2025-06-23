@@ -12,6 +12,10 @@ build_cores_policy = "all_others"
 specific_build_cores = ""
 skip_plots = false
 log_root_dir = "logs"
+# The maximum number of unique command lines to cache for process categorization.
+# A larger size may use more memory but can improve performance on extremely
+# complex builds with a huge variety of commands. Default is 4096.
+categorization_cache_size = 4096
 
 # ===================================================================
 # Paths to specialized configuration files

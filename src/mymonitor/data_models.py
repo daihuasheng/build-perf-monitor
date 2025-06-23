@@ -38,6 +38,8 @@ class MonitorConfig:
     skip_plots: bool
     # The root directory where all run logs and plots will be saved.
     log_root_dir: Path
+    # Categorization cache size
+    categorization_cache_size: int = 4096
 
 
 @dataclass

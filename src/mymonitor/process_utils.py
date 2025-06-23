@@ -9,6 +9,7 @@ This module provides helpers for:
 - Checking for the presence of system dependencies like 'pidstat'.
 """
 
+import functools
 import logging
 import re
 import shlex
@@ -148,7 +149,13 @@ def run_command(
         logger.error(f"Failed to execute command '{command}': {e}", exc_info=True)
         return -1, "", str(e)
 
-
+# PERFORMANCE FIX: Use an LRU cache to memoize the results of categorization.
+# Process command lines are highly repetitive during a build. Caching the
+# result of the expensive rule-matching logic for a given command name and
+# full command string significantly reduces CPU usage in this hot path.
+# A maxsize of 4096 should be more than sufficient to store all unique
+# command lines encountered during a large build.
+@functools.lru_cache(maxsize=config.get_config().monitor.categorization_cache_size)
 def get_process_category(cmd_name: str, cmd_full: str) -> Tuple[str, str]:
     """
     Categorizes a process based on its command name and full command line.
