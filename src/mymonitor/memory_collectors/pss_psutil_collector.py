@@ -174,13 +174,17 @@ class PssPsutilCollector(AbstractMemoryCollector):
     def read_samples(self) -> Iterable[List[ProcessMemorySample]]:
         """
         Continuously samples memory usage using a "descendants-first" optimization.
+        This generator yields lists of samples at each monitoring interval. It is
+        designed to be robust against race conditions during shutdown.
         """
         if not self._collecting:
-            logger.warning("Collector not started.")
+            logger.warning("Collector has not been started; read_samples will not run.")
             return
 
         logger.info("PssPsutilCollector sample reading loop started.")
-        while not self._stop_event:
+        # The main loop continues as long as the collector is active.
+        # The stop() method will set _stop_event to True, causing a graceful exit.
+        while True:
             interval_start_time = time.monotonic()
             current_interval_samples: List[ProcessMemorySample] = []
             processed_pids: Set[int] = set()
@@ -189,10 +193,8 @@ class PssPsutilCollector(AbstractMemoryCollector):
             if self.build_process_pid:
                 try:
                     parent_proc = psutil.Process(self.build_process_pid)
-                    # Get the parent and all its children, recursively.
                     descendants = parent_proc.children(recursive=True)
-                    # OPTIMIZED: Use itertools.chain to avoid creating a new list in memory,
-                    # which is more efficient when there are many descendant processes.
+                    # Use itertools.chain to efficiently iterate over the parent and its children.
                     for p in itertools.chain([parent_proc], descendants):
                         if p.pid in processed_pids:
                             continue
@@ -204,7 +206,7 @@ class PssPsutilCollector(AbstractMemoryCollector):
                     logger.info(
                         f"Main build process (PID {self.build_process_pid}) no longer exists. Switching to full scan mode."
                     )
-                    self.build_process_pid = None  # Stop trying this path.
+                    self.build_process_pid = None
                 except Exception as e:
                     logger.warning(
                         f"Error getting process descendants for PID {self.build_process_pid}: {e}",
@@ -212,10 +214,14 @@ class PssPsutilCollector(AbstractMemoryCollector):
                     )
 
             # --- Fallback/Daemon-Catching Loop ---
-            # Iterate over all remaining processes to find any that were not descendants.
+            # Iterate over all remaining processes to catch any that were missed.
+            # This is important for daemons or processes not in the main build tree.
             for proc in psutil.process_iter(
                 ["pid", "name", "cmdline", "username", "create_time"]
             ):
+                # If a stop is requested mid-scan, we can break early from this inner loop.
+                # The subsequent yield will still happen, ensuring data from this partial
+                # scan is not lost.
                 if self._stop_event:
                     break
                 if proc.pid in processed_pids:
@@ -225,11 +231,13 @@ class PssPsutilCollector(AbstractMemoryCollector):
                 if sample:
                     current_interval_samples.append(sample)
 
-            if self._stop_event and not current_interval_samples:
-                break
-
+            # *** FIX APPLIED HERE ***
+            # Always yield the collected samples for this interval BEFORE checking
+            # the main stop condition. This ensures that even on the final loop
+            # before shutdown, the collected data is sent to the consumer.
             yield current_interval_samples
 
+            # Now, check if we should exit the main loop AFTER yielding data.
             if self._stop_event:
                 break
 
@@ -237,11 +245,15 @@ class PssPsutilCollector(AbstractMemoryCollector):
             elapsed_time = time.monotonic() - interval_start_time
             sleep_time = self.monitoring_interval - elapsed_time
             if sleep_time > 0:
-                # Interruptible sleep
-                chunk_sleep = 0.1
-                while sleep_time > 0 and not self._stop_event:
-                    time.sleep(min(sleep_time, chunk_sleep))
-                    sleep_time -= chunk_sleep
+                # Use an interruptible sleep that checks the stop event periodically.
+                # This allows for a faster shutdown response.
+                chunk_sleep = 0.05  # Check for stop event frequently.
+                sleep_end_time = time.monotonic() + sleep_time
+                while time.monotonic() < sleep_end_time:
+                    if self._stop_event:
+                        break
+                    # Sleep for a short chunk or the remaining time, whichever is smaller.
+                    time.sleep(min(chunk_sleep, sleep_end_time - time.monotonic()))
             elif sleep_time < 0:
                 logger.warning(
                     f"PssPsutilCollector sampling took {elapsed_time:.2f}s, "

@@ -21,6 +21,7 @@ Key responsibilities include:
 import logging
 import polars as pl
 import psutil
+import queue
 import shlex
 import subprocess
 import threading
@@ -104,7 +105,6 @@ def run_and_monitor_build(
         if setup_command_template
         else base_build_cmd
     )
-    full_build_command_for_popen = base_build_cmd
 
     taskset_available = "taskset" in run_command("which taskset", Path("."))[1]
     num_total_cores = psutil.cpu_count()
@@ -116,6 +116,8 @@ def run_and_monitor_build(
         taskset_available,
         num_total_cores,
     )
+
+    full_build_command_for_popen = f"{build_command_prefix}{base_build_cmd}"
 
     run_context = RunContext(
         project_name=project_name,
@@ -149,14 +151,18 @@ def run_and_monitor_build(
         )
 
     # --- 2. Execution and Monitoring ---
-    build_stdout_lines: List[str] = []
-    build_stderr_lines: List[str] = []
     build_exit_code: int = -1
     start_time_seconds: Optional[float] = None
     monitoring_results: Optional[MonitoringResults] = None
     primary_metric_to_track: Optional[str] = None
+
+    # A single thread-safe queue for all log messages from stdout/stderr.
+    log_queue: queue.Queue[Optional[Tuple[str, str]]] = queue.Queue()
+
+    # Threads for reading stdout/stderr and a new thread for writing logs.
     stdout_thread: Optional[threading.Thread] = None
     stderr_thread: Optional[threading.Thread] = None
+    log_writer_thread: Optional[threading.Thread] = None
 
     try:
         metric_fields_header = local_active_memory_collector.get_metric_fields()
@@ -165,36 +171,28 @@ def run_and_monitor_build(
         )
         local_active_memory_collector.start()
 
-        # --- Command Execution Logic (Refactored) ---
-        # This logic constructs the command to be executed as a list of arguments.
-        # Using a list and `shell=False` is the safest way to handle commands,
-        # especially complex ones involving setup scripts, as it avoids shell
-        # injection vulnerabilities and quoting issues.
+        # Start a dedicated thread to consume from the log queue and write to a file.
+        # This serializes all log writes and prevents race conditions.
+        log_writer_thread = threading.Thread(
+            target=_log_writer,
+            args=(log_queue, run_context.paths.output_summary_log_file),
+            daemon=True,
+        )
+        log_writer_thread.start()
+
+        # Prepare the final command for execution.
         final_command_to_execute: List[str]
-
         if setup_command_template:
-            # For complex builds (e.g., AOSP) that require a setup script, we
-            # explicitly invoke a shell to handle environment sourcing and '&&'.
-            # The command becomes: [taskset ..., /bin/bash, -c, "source ... && build ..."]
-            command_list = ["/bin/bash", "-c", actual_build_command]
-            if build_command_prefix:
-                final_command_to_execute = (
-                    build_command_prefix.strip().split() + command_list
-                )
-            else:
-                final_command_to_execute = command_list
+            # Use a shell to correctly handle complex commands with 'source' and '&&'.
+            final_command_to_execute = ["/bin/bash", "-c", full_build_command_for_popen]
         else:
-            # For simple builds, we construct the argument list directly.
-            # e.g., [taskset, -c, 1-7, make, -j16]
-            final_command_to_execute = (
-                build_command_prefix.split() if build_command_prefix else []
-            ) + full_build_command_for_popen.split()
+            # No shell needed for simple commands; split for safety.
+            final_command_to_execute = shlex.split(full_build_command_for_popen)
 
-        with open(run_paths.output_summary_log_file, "a") as f_summary:
-            f_summary.write("--- Build Command Execution ---\n")
-            # Use shlex.join for a shell-safe representation of the command for logging.
-            log_cmd = shlex.join(final_command_to_execute)
-            f_summary.write(f"Command: {log_cmd}\n")
+        # Write build headers via the log queue to prevent file contention.
+        log_queue.put(("[MONITOR]", "\n--- Build Command Execution ---"))
+        log_queue.put(("[MONITOR]", f"Command: {shlex.join(final_command_to_execute)}"))
+        log_queue.put(("[MONITOR]", "--- Build Output ---"))
 
         start_time_seconds = time.monotonic()
         current_build_proc = subprocess.Popen(
@@ -203,14 +201,12 @@ def run_and_monitor_build(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            shell=False,
-            bufsize=1,
+            shell=False,  # shell=False is safer; shell logic is handled above.
+            bufsize=1,  # Line-buffered.
         )
-        # The build process PID is now known.
         run_context.build_process_pid = current_build_proc.pid
 
-        # Set the PID on the collector instance now that it's available.
-        # This enables the "descendants-first" optimization in PssPsutilCollector.
+        # Pass the build process PID to the collector if it needs it.
         if local_active_memory_collector and hasattr(
             local_active_memory_collector, "build_process_pid"
         ):
@@ -218,13 +214,15 @@ def run_and_monitor_build(
 
         active_memory_collector = local_active_memory_collector
 
+        # Start non-blocking reader threads to feed the central log queue.
         stdout_thread = _start_stream_reader_thread(
-            current_build_proc.stdout, "STDOUT", run_context, build_stdout_lines
+            current_build_proc.stdout, "[STDOUT]", log_queue
         )
         stderr_thread = _start_stream_reader_thread(
-            current_build_proc.stderr, "STDERR", run_context, build_stderr_lines
+            current_build_proc.stderr, "[STDERR]", log_queue
         )
 
+        # This is the main blocking call that runs the monitoring loop.
         monitoring_results = _perform_monitoring_loop(
             local_active_memory_collector,
             current_build_proc,
@@ -237,14 +235,13 @@ def run_and_monitor_build(
 
     finally:
         # --- 3. Cleanup and Finalization ---
+        # This block ensures that all resources are cleaned up, even if errors occur.
         if local_active_memory_collector:
             local_active_memory_collector.stop()
         if current_build_proc and current_build_proc.poll() is None:
+            logger.warning("Build process did not exit. Terminating.")
             current_build_proc.terminate()
-            try:
-                current_build_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                current_build_proc.kill()
+            current_build_proc.wait()
 
         end_time_seconds = time.monotonic()
         duration_seconds_float = (
@@ -254,20 +251,19 @@ def run_and_monitor_build(
             "%H:%M:%S", time.gmtime(duration_seconds_float)
         )
 
-        # Wait for stream reader threads to finish *before* writing logs.
-        # This ensures all stdout/stderr from the build is captured.
+        # Wait for producer threads (stdout/stderr readers) to finish.
         if stdout_thread:
             stdout_thread.join()
         if stderr_thread:
             stderr_thread.join()
 
-        # Now that threads are joined, it's safe to write the captured output.
-        with open(run_paths.output_summary_log_file, "a") as f_summary:
-            f_summary.write(f"\nBuild End Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-            _write_stream_to_summary(f_summary, "STDOUT", build_stdout_lines)
-            _write_stream_to_summary(f_summary, "STDERR", build_stderr_lines)
+        # Signal the consumer (log writer) that there's no more data and wait for it.
+        if log_writer_thread:
+            log_queue.put(None)  # Sentinel value to stop the writer.
+            log_writer_thread.join()
 
         if monitoring_results:
+            # Compile and write the final text summary.
             _compile_and_write_final_summary_and_aux_logs(
                 context=run_context,
                 results=monitoring_results,
@@ -276,7 +272,10 @@ def run_and_monitor_build(
                 duration_formatted=formatted_duration,
                 primary_metric=primary_metric_to_track,
             )
-            _write_monitoring_data_to_parquet(monitoring_results, run_context)
+            # Write the raw collected data to a Parquet file for analysis.
+            _write_monitoring_data_to_parquet(
+                results=monitoring_results, context=run_context
+            )
 
         _execute_clean_step(run_context, project_config, "Post-Build Clean")
 
@@ -291,8 +290,10 @@ def cleanup_processes() -> None:
     """
     global current_build_proc, active_memory_collector
     if active_memory_collector:
+        logger.info("Signal received, stopping memory collector...")
         active_memory_collector.stop()
     if current_build_proc and current_build_proc.poll() is None:
+        logger.info("Signal received, terminating build process...")
         current_build_proc.terminate()
         current_build_proc.wait()
     logger.info("Cleanup finished.")
@@ -308,156 +309,130 @@ def _perform_monitoring_loop(
     primary_metric_to_track: Optional[str],
 ) -> MonitoringResults:
     """
-    Performs the main memory monitoring loop, collecting and processing samples.
+    The core loop that consumes data from a memory collector and aggregates results.
 
-    This function iterates over samples provided by the active memory collector.
-    For each interval's worth of samples, it:
-    1. Categorizes each process using `get_process_category`.
-    2. Aggregates memory usage per category and for the total run.
-    3. Tracks peak memory usage for individual processes and categories.
-    4. Tracks the overall peak memory usage for the entire build.
-    5. Formats the data into rows suitable for the final Parquet file.
-    The loop terminates when the build process finishes.
+    This function iterates over the data yielded by the collector, categorizes each
+    process sample, and aggregates statistics in real-time. It is designed to be
+    robust against shutdown race conditions by ensuring the collector is properly
+    stopped and its final output is consumed.
 
     Args:
-        active_memory_collector: The initialized memory collector instance.
-        current_build_proc: The Popen object for the running build process.
-        metric_fields_header: A list of metric names provided by the collector.
-        primary_metric_to_track: The main metric to use for summary calculations (e.g., "PSS_KB").
+        active_memory_collector: The active memory collector instance.
+        current_build_proc: The subprocess object for the running build.
+        metric_fields_header: A list of metric field names from the collector.
+        primary_metric_to_track: The main metric to use for peak calculations.
 
     Returns:
-        A MonitoringResults object containing all aggregated data from the loop.
+        A MonitoringResults object containing all collected and aggregated data.
     """
-    all_samples_data_loop: List[Dict[str, Any]] = []
-    category_stats_loop: Dict[str, Dict[str, Any]] = {}
-    peak_overall_memory_kb_loop: int = 0
-    peak_overall_memory_epoch_loop: int = 0
-    category_peak_sum_loop: Dict[str, int] = {}
-    category_pid_set_loop: Dict[str, Set[str]] = {}
-
-    # Cache for process categorization results.
-    # This avoids re-calculating the category for the same process command repeatedly.
-    # The key is a tuple (command_name, full_command), and the value is (major_cat, minor_cat).
-    category_cache: Dict[Tuple[str, str], Tuple[str, str]] = {}
+    all_samples_data: List[Dict[str, Any]] = []
+    category_stats: Dict[str, Dict[str, Any]] = {}
+    peak_overall_memory_kb: int = 0
+    peak_overall_memory_epoch: int = 0
+    category_peak_sum: Dict[str, int] = {}
+    category_pid_set: Dict[str, Set[str]] = {}
 
     logger.info("Starting monitoring loop...")
+    stop_requested = False
 
-    for samples_at_interval in active_memory_collector.read_samples():
-        current_epoch = int(time.time())
-        category_mem_sum_interval: Dict[str, int] = {}
-        all_mem_sum_interval: int = 0
-        category_pids_interval: Dict[str, Set[str]] = {}
+    # The loop terminates when the collector's generator is exhausted.
+    for samples_in_interval in active_memory_collector.read_samples():
+        epoch_now = int(time.time())
+        current_interval_sum_kb = 0
+        current_category_sums: Dict[str, int] = {}
 
-        for sample in samples_at_interval:
-            # Use the cache to get the process category.
-            cache_key = (sample.command_name, sample.full_command)
-            if cache_key in category_cache:
-                major_cat, minor_cat = category_cache[cache_key]
-            else:
-                # If not in cache, calculate it and store the result.
-                major_cat, minor_cat = get_process_category(
-                    sample.command_name, sample.full_command
-                )
-                category_cache[cache_key] = (major_cat, minor_cat)
+        # Process each individual process sample from the interval.
+        for sample in samples_in_interval:
+            major_cat, minor_cat = get_process_category(
+                sample.command_name, sample.full_command
+            )
+            primary_metric_value = (
+                sample.metrics.get(primary_metric_to_track, 0)
+                if primary_metric_to_track
+                else 0
+            )
+            current_interval_sum_kb += primary_metric_value
 
-            category_key = f"{major_cat}_{minor_cat}"
-
-            if major_cat == "Ignored":
-                continue
-
-            process_row_dict: Dict[str, Any] = {
-                "Timestamp_epoch": current_epoch,
+            # Create the raw data row for Parquet export with a consistent schema.
+            row = {
+                "Timestamp_epoch": epoch_now,
                 "Record_Type": "PROCESS",
+                "PID": sample.pid,
                 "Major_Category": major_cat,
                 "Minor_Category": minor_cat,
-                "PID": sample.pid,
                 "Command_Name": sample.command_name,
                 "Full_Command": sample.full_command,
-                "Sum_Value": None,
+                **{k: v for k, v in sample.metrics.items()},
             }
-            metric_value_for_sum = 0
-            for metric_name in metric_fields_header:
-                metric_val = sample.metrics.get(metric_name)
-                try:
-                    process_row_dict[metric_name] = (
-                        int(metric_val) if metric_val is not None else None
-                    )
-                    if (
-                        metric_name == primary_metric_to_track
-                        and metric_val is not None
-                    ):
-                        metric_value_for_sum = int(metric_val)
-                except (ValueError, TypeError):
-                    process_row_dict[metric_name] = None
-            all_samples_data_loop.append(process_row_dict)
+            all_samples_data.append(row)
 
-            all_mem_sum_interval += metric_value_for_sum
-            category_mem_sum_interval.setdefault(category_key, 0)
-            category_mem_sum_interval[category_key] += metric_value_for_sum
-            category_pids_interval.setdefault(category_key, set()).add(sample.pid)
-
+            # Track the peak memory usage for a single process within each category.
             if primary_metric_to_track:
+                category_key = f"{major_cat}_{minor_cat}"
                 if (
-                    category_key not in category_stats_loop
-                    or metric_value_for_sum
-                    > category_stats_loop[category_key].get(
-                        "peak_metric", float("-inf")
-                    )
+                    category_key not in category_stats
+                    or primary_metric_value
+                    > category_stats[category_key].get(primary_metric_to_track, 0)
                 ):
-                    category_stats_loop[category_key] = {
-                        "peak_metric": metric_value_for_sum,
+                    category_stats[category_key] = {
+                        primary_metric_to_track: primary_metric_value,
                         "pid": sample.pid,
-                        "command": sample.command_name,
-                        "full_command": sample.full_command,
+                        "cmd": sample.command_name,
+                        "full_cmd": sample.full_command,
                     }
 
-        if all_mem_sum_interval > peak_overall_memory_kb_loop:
-            peak_overall_memory_kb_loop = all_mem_sum_interval
-            peak_overall_memory_epoch_loop = current_epoch
+            # Track unique PIDs per category.
+            category_key_for_pid = f"{major_cat}_{minor_cat}"
+            category_pid_set.setdefault(category_key_for_pid, set()).add(sample.pid)
 
-        for cat_tuple_sum, mem_sum_val_sum in category_mem_sum_interval.items():
-            major_cat_from_key, minor_cat_from_key = cat_tuple_sum.split("_", 1)
-            cat_sum_row_dict = _create_summary_row(
-                current_epoch,
-                "CATEGORY_SUM",
-                major_cat_from_key,
-                minor_cat_from_key,
-                mem_sum_val_sum,
-                metric_fields_header,
+            # Track sum for each category in this interval.
+            current_category_sums[category_key_for_pid] = (
+                current_category_sums.get(category_key_for_pid, 0)
+                + primary_metric_value
             )
-            all_samples_data_loop.append(cat_sum_row_dict)
 
-        if primary_metric_to_track:
-            all_sum_row_dict = _create_summary_row(
-                current_epoch,
+        # Update overall and category peak sums for the interval.
+        if current_interval_sum_kb > peak_overall_memory_kb:
+            peak_overall_memory_kb = current_interval_sum_kb
+            peak_overall_memory_epoch = epoch_now
+
+        for cat_key, cat_sum in current_category_sums.items():
+            if cat_sum > category_peak_sum.get(cat_key, 0):
+                category_peak_sum[cat_key] = cat_sum
+
+        # Add a summary record for the entire interval.
+        all_samples_data.append(
+            _create_summary_row(
+                epoch_now,
                 "ALL_SUM",
-                "ALL",
-                "ALL",
-                all_mem_sum_interval,
+                "All",
+                "All",
+                current_interval_sum_kb,
                 metric_fields_header,
             )
-            all_samples_data_loop.append(all_sum_row_dict)
+        )
 
-        for cat, current_cat_sum in category_mem_sum_interval.items():
-            category_peak_sum_loop[cat] = max(
-                category_peak_sum_loop.get(cat, 0), current_cat_sum
+        # The `read_samples` generator yields one last time after stop() is called.
+        # This ensures we consume the final data before the loop terminates.
+        if (
+            not stop_requested
+            and current_build_proc
+            and current_build_proc.poll() is not None
+        ):
+            logger.info(
+                "Build process finished. Requesting final sample from collector."
             )
-
-        for cat, pids_in_interval in category_pids_interval.items():
-            category_pid_set_loop.setdefault(cat, set()).update(pids_in_interval)
-
-        if current_build_proc and current_build_proc.poll() is not None:
-            logger.info("Build process finished. Stopping memory collection.")
-            break
+            active_memory_collector.stop()
+            stop_requested = True
 
     logger.info("Monitoring loop finished.")
     return MonitoringResults(
-        all_samples_data=all_samples_data_loop,
-        category_stats=category_stats_loop,
-        peak_overall_memory_kb=peak_overall_memory_kb_loop,
-        peak_overall_memory_epoch=peak_overall_memory_epoch_loop,
-        category_peak_sum=category_peak_sum_loop,
-        category_pid_set=category_pid_set_loop,
+        all_samples_data=all_samples_data,
+        category_stats=category_stats,
+        peak_overall_memory_kb=peak_overall_memory_kb,
+        peak_overall_memory_epoch=peak_overall_memory_epoch,
+        category_peak_sum=category_peak_sum,
+        category_pid_set=category_pid_set,
     )
 
 
@@ -483,7 +458,15 @@ def _generate_run_paths(
 
 
 def _create_memory_collector(context: RunContext) -> Optional[AbstractMemoryCollector]:
-    """Creates and returns a memory collector instance based on the run context."""
+    """
+    Initializes and returns a memory collector instance based on the run context.
+
+    Args:
+        context: The context object for the current run.
+
+    Returns:
+        An initialized memory collector instance, or None if initialization fails.
+    """
     global active_memory_collector
     collector_kwargs: Dict[str, Any] = {
         "collector_cpu_core": context.monitor_core_id,
@@ -512,36 +495,29 @@ def _create_memory_collector(context: RunContext) -> Optional[AbstractMemoryColl
 
 
 def _prepare_initial_summary_log_header(context: RunContext) -> List[str]:
-    """Prepares the header content for the summary log file using a context object."""
-    header_content: List[str] = []
-    header_content.append("=" * 80)
-    header_content.append(f"Project: {context.project_name}")
-    header_content.append(f"Parallelism: -j{context.parallelism_level}")
-    header_content.append(f"Memory Metric Collector: {context.collector_type.upper()}")
-    header_content.append(f"Source Directory: {context.project_dir.resolve()}")
-    header_content.append(f"Actual Build Command: {context.actual_build_command}")
-    header_content.append(f"Process Pattern (for collector): {context.process_pattern}")
-    header_content.append(
-        f"Monitoring Interval (approx): {context.monitoring_interval} seconds"
-    )
-    header_content.append(
-        f"Run Timestamp: {context.current_timestamp_str} ({time.strftime('%Y-%m-%d %H:%M:%S')})"
-    )
-    header_content.append(
-        f"Output Parquet File: {context.paths.output_parquet_file.name}"
-    )
-    header_content.append(
-        f"Summary Log File: {context.paths.output_summary_log_file.name}"
-    )
+    """Prepares the header content for the summary log file."""
+    header_content: List[str] = [
+        "=" * 80,
+        f"Project: {context.project_name}",
+        f"Parallelism: -j{context.parallelism_level}",
+        f"Memory Metric Collector: {context.collector_type.upper()}",
+        f"Source Directory: {context.project_dir.resolve()}",
+        f"Actual Build Command: {context.actual_build_command}",
+        f"Process Pattern (for collector): {context.process_pattern}",
+        f"Monitoring Interval (approx): {context.monitoring_interval} seconds",
+        f"Run Timestamp: {context.current_timestamp_str} ({time.strftime('%Y-%m-%d %H:%M:%S')})",
+        f"Output Parquet File: {context.paths.output_parquet_file.name}",
+        f"Summary Log File: {context.paths.output_summary_log_file.name}",
+    ]
     if context.collector_type == "rss_pidstat":
         header_content.append(
             f"Collector Aux Log (temporary, will be merged): {context.paths.collector_aux_log_file.name}"
         )
-    header_content.append(
-        f"Monitor Script Pinned to CPU Core: {context.monitor_script_pinned_to_core_info}"
-    )
-    header_content.append(
-        f"Build Processes CPU Cores Target: {context.build_cores_target_str}"
+    header_content.extend(
+        [
+            f"Monitor Script Pinned to CPU Core: {context.monitor_script_pinned_to_core_info}",
+            f"Build Processes CPU Cores Target: {context.build_cores_target_str}",
+        ]
     )
     if (
         context.collector_type == "rss_pidstat"
@@ -564,7 +540,6 @@ def _prepare_actual_clean_command(
 ) -> Tuple[str, Optional[str]]:
     """Prepares the actual clean command string and the executable shell if needed."""
     executable_shell: Optional[str] = None
-    actual_clean_cmd: str
     if setup_command_template:
         actual_clean_cmd = f"{setup_command_template} && {clean_command_template}"
         executable_shell = "/bin/bash"
@@ -576,41 +551,76 @@ def _prepare_actual_clean_command(
 # --- Execution & I/O Helpers ---
 
 
+def _log_writer(log_queue: queue.Queue, summary_log_path: Path) -> None:
+    """
+    Consumes log messages from a queue and writes them to the summary file.
+
+    This function runs in a dedicated thread. It waits for items to appear in
+    the queue and writes them to the log file, ensuring all output is sequential
+    and thread-safe. It exits when it receives a `None` sentinel value.
+
+    Args:
+        log_queue: The thread-safe queue holding log messages.
+        summary_log_path: The path to the summary log file to write to.
+    """
+    try:
+        with open(summary_log_path, "a", buffering=1) as f_summary:
+            while True:
+                item = log_queue.get()
+                if item is None:  # Sentinel to indicate end of logging.
+                    break
+                prefix, line = item
+                f_summary.write(f"{prefix} {line}\n")
+    except Exception as e:
+        logger.error(f"Error in log writer thread: {e}", exc_info=True)
+
+
 def _start_stream_reader_thread(
     pipe: Optional[IO[str]],
-    stream_name: str,
-    context: RunContext,
-    output_list: List[str],
+    stream_name_prefix: str,
+    log_queue: queue.Queue,
 ) -> Optional[threading.Thread]:
     """Creates and starts a daemon thread to read from a subprocess stream."""
     if not pipe:
         return None
-    log_prefix = f"[{context.project_name}-j{context.parallelism_level} {stream_name}] "
+
     thread = threading.Thread(
-        target=_stream_output, args=(pipe, log_prefix, output_list), daemon=True
+        target=_stream_output,
+        args=(pipe, stream_name_prefix, log_queue),
+        daemon=True,
     )
     thread.start()
     return thread
 
 
 def _stream_output(
-    pipe: Optional[IO[str]], prefix: str, output_lines_list: List[str]
+    pipe: Optional[IO[str]], prefix: str, log_queue: queue.Queue
 ) -> None:
-    """Reads lines from a subprocess pipe, logs them, and collects them."""
+    """Reads lines from a subprocess pipe and puts them in a queue."""
     if not pipe:
         return
     try:
-        for raw_line_content in iter(pipe.readline, ""):
-            stripped_line = raw_line_content.strip()
-            logger.debug(f"{prefix}{stripped_line}")
-            output_lines_list.append(stripped_line)
+        for line in iter(pipe.readline, ""):
+            line = line.strip()
+            if line:
+                logger.info(f"{prefix} {line}")  # Log to console for live feedback.
+                # Put message into the queue for the writer thread.
+                # Use a timeout to prevent indefinite blocking if the writer thread dies.
+                try:
+                    log_queue.put((prefix, line), timeout=5.0)
+                except queue.Full:
+                    logger.error(
+                        "Log queue is full, writer thread may have crashed. Stopping log for this stream."
+                    )
+                    break  # Exit loop to allow this reader thread to terminate.
     except ValueError:
-        logger.debug(f"{prefix}Pipe closed or other ValueError during streaming.")
+        # This can happen if the pipe is closed while reading.
+        logger.warning(f"Stream for {prefix} closed unexpectedly.")
     except Exception as e:
-        logger.error(f"{prefix}Unexpected error in _stream_output: {e}", exc_info=True)
+        logger.error(f"Error reading stream for {prefix}: {e}", exc_info=True)
     finally:
-        if pipe and not pipe.closed:
-            pass
+        if pipe:
+            pipe.close()
 
 
 def _run_and_log_command_to_summary(
@@ -624,6 +634,10 @@ def _run_and_log_command_to_summary(
     cwd_path = context.project_dir
     summary_file = context.paths.output_summary_log_file
     logger.info(f"Executing {cmd_desc} command: {cmd_str} in {cwd_path}")
+
+    # Ensure the output directory exists before writing the log file.
+    summary_file.parent.mkdir(parents=True, exist_ok=True)
+
     with open(summary_file, "a") as f_s:
         f_s.write(f"\n--- {cmd_desc} Command ---\n")
         f_s.write(f"Command: {cmd_str}\n")
@@ -632,10 +646,15 @@ def _run_and_log_command_to_summary(
     )
     with open(summary_file, "a") as f_s:
         f_s.write(f"Exit Code: {exit_code}\n")
+        # Process stdout/stderr line-by-line to add prefixes for consistency.
         if stdout_val:
-            f_s.write(f"--- STDOUT ---\n{stdout_val}\n")
+            f_s.write("--- STDOUT ---\n")
+            for line in stdout_val.strip().splitlines():
+                f_s.write(f"[STDOUT] {line}\n")
         if stderr_val:
-            f_s.write(f"--- STDERR ---\n{stderr_val}\n")
+            f_s.write("--- STDERR ---\n")
+            for line in stderr_val.strip().splitlines():
+                f_s.write(f"[STDERR] {line}\n")
     return exit_code
 
 
@@ -669,12 +688,11 @@ def _compile_and_write_final_summary_and_aux_logs(
     primary_metric: Optional[str],
 ) -> None:
     """Compiles the final summary statistics and writes them to the log file and console."""
-    final_summary_log_lines: List[str] = []
-    final_summary_log_lines.append("\n--- Build & Monitoring Summary ---")
-    final_summary_log_lines.append(
-        f"Total Build & Monitoring Duration: {duration_formatted} ({duration_float:.2f} seconds)"
-    )
-    final_summary_log_lines.append(f"Final Build Exit Code: {build_exit_code}")
+    final_summary_log_lines: List[str] = [
+        "\n--- Build & Monitoring Summary ---",
+        f"Total Build & Monitoring Duration: {duration_formatted} ({duration_float:.2f} seconds)",
+        f"Final Build Exit Code: {build_exit_code}",
+    ]
 
     if primary_metric:
         peak_time_str = (
@@ -697,10 +715,10 @@ def _compile_and_write_final_summary_and_aux_logs(
     )
     if results.category_stats:
         for category, stats in sorted(results.category_stats.items()):
-            peak_val = stats.get("peak_metric", "N/A")
+            peak_val = stats.get(primary_metric, "N/A") if primary_metric else "N/A"
             pid_val = stats.get("pid", "N/A")
-            cmd_val = stats.get("command", "N/A")
-            full_cmd_val = stats.get("full_command", "N/A")
+            cmd_val = stats.get("cmd", "N/A")
+            full_cmd_val = stats.get("full_cmd", "N/A")
             final_summary_log_lines.append(
                 f"  - {category}: {peak_val} KB (PID: {pid_val}, Command: {cmd_val})"
             )
@@ -732,6 +750,7 @@ def _compile_and_write_final_summary_and_aux_logs(
 
     with open(context.paths.output_summary_log_file, "a") as f_summary:
         f_summary.write("\n")
+        # If the pidstat collector was used, merge its stderr log into the summary.
         if (
             context.collector_type == "rss_pidstat"
             and context.paths.collector_aux_log_file.exists()
@@ -752,6 +771,7 @@ def _compile_and_write_final_summary_and_aux_logs(
         for line in final_summary_log_lines:
             f_summary.write(line + "\n")
 
+    # Also print the summary to the console for immediate feedback.
     for line in final_summary_log_lines:
         logger.info(line)
 
@@ -776,17 +796,6 @@ def _write_monitoring_data_to_parquet(
         )
 
 
-def _write_stream_to_summary(
-    f_handle: IO[Any], stream_name: str, lines: List[str]
-) -> None:
-    """Writes a list of lines from a stream to the summary log file."""
-    if lines:
-        f_handle.write(f"\n--- Build Process {stream_name} ---\n")
-        for line in lines:
-            f_handle.write(line + "\n")
-        f_handle.write(f"--- End Build Process {stream_name} ---\n")
-
-
 def _create_summary_row(
     epoch: int,
     record_type: str,
@@ -806,6 +815,7 @@ def _create_summary_row(
         "Full_Command": None,
         "Sum_Value": sum_value,
     }
+    # Ensure all metric columns exist, even if they are null for summary rows.
     for metric_name in metric_fields_header:
         row[metric_name] = None
     return row
