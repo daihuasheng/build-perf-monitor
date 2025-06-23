@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Dict, IO, List, Optional, Tuple, Set, Union
 
 # Import local modules
+from . import config
 from .data_models import MonitoringResults, ProjectConfig, RunContext, RunPaths
 from .memory_collectors.base import AbstractMemoryCollector
 from .memory_collectors.pss_psutil_collector import PssPsutilCollector
@@ -477,8 +478,12 @@ def _create_memory_collector(context: RunContext) -> Optional[AbstractMemoryColl
     }
     try:
         if context.collector_type == "pss_psutil":
+            # Pass the collector mode from the config into the collector
             active_memory_collector = PssPsutilCollector(
-                context.process_pattern, context.monitoring_interval, **collector_kwargs
+                process_pattern=context.process_pattern,
+                monitoring_interval=context.monitoring_interval,
+                mode=config.get_config().monitor.pss_collector_mode, # Pass the mode
+                **collector_kwargs,
             )
         elif context.collector_type == "rss_pidstat":
             active_memory_collector = RssPidstatCollector(

@@ -40,6 +40,8 @@ class MonitorConfig:
     log_root_dir: Path
     # Categorization cache size
     categorization_cache_size: int = 4096
+    # Collector optimization mode, could be 'full_scan' or 'descendants_only'
+    pss_collector_mode: str = "full_scan"
 
 
 @dataclass

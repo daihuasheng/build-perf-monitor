@@ -38,25 +38,41 @@ class PssPsutilCollector(AbstractMemoryCollector):
     PSUTIL_METRIC_FIELDS: List[str] = ["PSS_KB", "USS_KB", "RSS_KB"]
     """Defines the memory metric fields collected by this implementation."""
 
-    def __init__(self, process_pattern: str, monitoring_interval: int, **kwargs):
+    def __init__(
+        self,
+        process_pattern: str,
+        monitoring_interval: float,
+        mode: str = "full_scan",  # Add mode parameter
+        **kwargs,
+    ):
         """
         Initializes the PssPsutilCollector.
 
         Args:
             process_pattern: A regex pattern to match against process names or command lines.
             monitoring_interval: The interval in seconds between sampling attempts.
+            mode: The mode of operation for the collector, either 'full_scan' or 'descendants_only'.
             **kwargs: Additional keyword arguments (currently not used by this collector).
 
         Raises:
             ValueError: If the provided `process_pattern` is an invalid regular expression.
         """
         super().__init__(process_pattern, monitoring_interval, **kwargs)
+        # This list tells psutil.process_iter which process attributes to pre-fetch
+        # for performance. These are the attributes needed by _get_sample_for_process.
+        self._iter_attrs = ["pid", "name", "cmdline"]
+        
         # Store the main build process PID for the optimization.
         self.build_process_pid: Optional[int] = kwargs.get("build_process_pid")
         self._collecting: bool = False
         """Flag to indicate if the collector's main loop should be running."""
         self._stop_event: bool = False
         """Event flag to signal the sampling loop to terminate gracefully."""
+        self.mode = mode
+        if self.mode not in ["full_scan", "descendants_only"]:
+            raise ValueError(f"Invalid PssPsutilCollector mode: {self.mode}")
+        logger.info(f"PssPsutilCollector initialized in '{self.mode}' mode.")
+
         try:
             # Compile the regex pattern for efficiency during process iteration.
             self.compiled_pattern: re.Pattern = re.compile(process_pattern)
@@ -189,47 +205,34 @@ class PssPsutilCollector(AbstractMemoryCollector):
             current_interval_samples: List[ProcessMemorySample] = []
             processed_pids: Set[int] = set()
 
-            # --- OPTIMIZATION: Process descendants first ---
-            if self.build_process_pid:
+            # --- OPTIMIZATION: Execute logic based on the configured mode ---
+            if self.mode == "descendants_only" and self.build_process_pid:
+                # --- FAST PATH: Only scan descendants of the main build process ---
                 try:
                     parent_proc = psutil.Process(self.build_process_pid)
-                    descendants = parent_proc.children(recursive=True)
-                    # Use itertools.chain to efficiently iterate over the parent and its children.
-                    for p in itertools.chain([parent_proc], descendants):
-                        if p.pid in processed_pids:
-                            continue
+                    for p in itertools.chain([parent_proc], parent_proc.children(recursive=True)):
                         sample = self._get_sample_for_process(p)
                         if sample:
                             current_interval_samples.append(sample)
-                        processed_pids.add(p.pid)
                 except psutil.NoSuchProcess:
-                    logger.info(
-                        f"Main build process (PID {self.build_process_pid}) no longer exists. Switching to full scan mode."
-                    )
-                    self.build_process_pid = None
-                except Exception as e:
                     logger.warning(
-                        f"Error getting process descendants for PID {self.build_process_pid}: {e}",
-                        exc_info=False,
+                        f"Main build process PID {self.build_process_pid} disappeared. "
+                        "Consider using 'full_scan' mode if processes are missed."
                     )
+                    self.build_process_pid = None # Fallback to full scan next time
+                except Exception as e:
+                    logger.warning(f"Error scanning descendants: {e}", exc_info=False)
+            else:
+                # --- SAFE PATH (DEFAULT): Scan all system processes ---
+                if self.mode == "descendants_only" and not self.build_process_pid:
+                    logger.debug("descendants_only mode is active, but no build PID is set. Performing full scan.")
 
-            # --- Fallback/Daemon-Catching Loop ---
-            # Iterate over all remaining processes to catch any that were missed.
-            # This is important for daemons or processes not in the main build tree.
-            for proc in psutil.process_iter(
-                ["pid", "name", "cmdline", "username", "create_time"]
-            ):
-                # If a stop is requested mid-scan, we can break early from this inner loop.
-                # The subsequent yield will still happen, ensuring data from this partial
-                # scan is not lost.
-                if self._stop_event:
-                    break
-                if proc.pid in processed_pids:
-                    continue
-
-                sample = self._get_sample_for_process(proc)
-                if sample:
-                    current_interval_samples.append(sample)
+                for proc in psutil.process_iter(self._iter_attrs):
+                    if self._stop_event:
+                        break
+                    sample = self._get_sample_for_process(proc)
+                    if sample:
+                        current_interval_samples.append(sample)
 
             # *** FIX APPLIED HERE ***
             # Always yield the collected samples for this interval BEFORE checking

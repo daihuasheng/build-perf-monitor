@@ -16,6 +16,14 @@ log_root_dir = "logs"
 # A larger size may use more memory but can improve performance on extremely
 # complex builds with a huge variety of commands. Default is 4096.
 categorization_cache_size = 4096
+# Defines the scanning mode for the pss_psutil collector.
+# - "full_scan": (Default, Safe) Scans all system processes that match the
+#   project's process_pattern. This is robust but can be slow.
+# - "descendants_only": (Fast, Experimental) Only scans the descendants of the
+#   main build process. This is much faster but may miss processes if the build
+#   system spawns them in a detached way. Use the `verify_process_tree.py`
+#   tool to check if this mode is safe for your project.
+pss_collector_mode = "full_scan"
 
 # ===================================================================
 # Paths to specialized configuration files
