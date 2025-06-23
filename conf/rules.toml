@@ -62,6 +62,15 @@ match_type = "exact"
 pattern = "mymonitor"
 comment = "Ignore the monitoring tool's own process."
 
+[[rules]]
+major_category = "Ignored"
+category = "ZellijTerminal"
+priority = 998
+match_field = "current_cmd_name"
+match_type = "exact"
+pattern = "zellij"
+comment = "Ignore the Zellij terminal multiplexer process."
+
 # Priority 150-250 (High - Unambiguous Processes)
 [[rules]]
 major_category = "BuildSystem"
