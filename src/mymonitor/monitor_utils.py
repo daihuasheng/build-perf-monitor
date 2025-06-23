@@ -117,8 +117,6 @@ def run_and_monitor_build(
         num_total_cores,
     )
 
-    full_build_command_for_popen = f"{build_command_prefix}{base_build_cmd}"
-
     run_context = RunContext(
         project_name=project_name,
         project_dir=project_dir,
@@ -180,14 +178,18 @@ def run_and_monitor_build(
         )
         log_writer_thread.start()
 
-        # Prepare the final command for execution.
-        final_command_to_execute: List[str]
-        if setup_command_template:
-            # Use a shell to correctly handle complex commands with 'source' and '&&'.
-            final_command_to_execute = ["/bin/bash", "-c", full_build_command_for_popen]
-        else:
-            # No shell needed for simple commands; split for safety.
-            final_command_to_execute = shlex.split(full_build_command_for_popen)
+        # --- Prepare the final command for execution ---
+        # Unify the command execution logic to always use a shell.
+        # This is more robust and handles cases where the build_command_template
+        # itself is complex (e.g., contains '&&' or 'cd'), not just the setup command.
+        # The `taskset` prefix is applied to the shell, which then executes the
+        # entire actual_build_command string. This ensures CPU affinity is
+        # correctly applied to the entire build process.
+        final_command_to_execute = shlex.split(build_command_prefix) + [
+            "/bin/bash",
+            "-c",
+            actual_build_command,
+        ]
 
         # Write build headers via the log queue to prevent file contention.
         log_queue.put(("[MONITOR]", "\n--- Build Command Execution ---"))
