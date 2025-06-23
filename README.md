@@ -12,6 +12,9 @@ MyMonitor is a command-line tool for monitoring and analyzing the memory usage o
   - [目录 (Table of Contents)](#目录-table-of-contents)
   - [特性 (Features)](#特性-features)
   - [安装与配置 (Installation \& Setup)](#安装与配置-installation--setup)
+    - [1. 系统依赖 (Prerequisites)](#1-系统依赖-prerequisites)
+    - [2. 克隆仓库 (Clone the Repository)](#2-克隆仓库-clone-the-repository)
+    - [3. 创建虚拟环境并安装依赖 (Create a Virtual Environment \& Install Dependencies)](#3-创建虚拟环境并安装依赖-create-a-virtual-environment--install-dependencies)
   - [核心概念：配置文件 (Core Concept: Configuration Files)](#核心概念配置文件-core-concept-configuration-files)
     - [主配置文件: `config.toml`](#主配置文件-configtoml)
     - [项目定义: `projects.toml`](#项目定义-projectstoml)
@@ -41,7 +44,7 @@ MyMonitor is a command-line tool for monitoring and analyzing the memory usage o
 
 ## 安装与配置 (Installation & Setup)
 
-**1. 系统依赖 (Prerequisites)**
+### 1. 系统依赖 (Prerequisites)
 
 - Python 3.12+
 - (可选，若使用 `rss_pidstat` 收集器) `sysstat` 包。在基于 Debian/Ubuntu 的系统上，可以通过以下命令安装：
@@ -50,14 +53,14 @@ MyMonitor is a command-line tool for monitoring and analyzing the memory usage o
   sudo apt-get update && sudo apt-get install sysstat
   ```
 
-**2. 克隆仓库 (Clone the Repository)**
+### 2. 克隆仓库 (Clone the Repository)
 
 ```bash
 git clone <your-repository-url>
 cd mymonitor
 ```
 
-**3. 创建虚拟环境并安装依赖 (Create a Virtual Environment & Install Dependencies)**
+### 3. 创建虚拟环境并安装依赖 (Create a Virtual Environment & Install Dependencies)
 
 建议使用 `uv` 或 `pip` 在虚拟环境中安装依赖。
 
@@ -108,25 +111,27 @@ This is the core of the classification engine. This file contains a set of rules
 
 ### 如何配置工具初次使用 (How to Configure the Tool for First Use)
 
-1.  **打开 `conf/config.toml`**:
+1. **打开 `conf/config.toml`**:
     - 检查 `log_root_dir`，确保日志输出目录符合您的期望。默认为 `./logs`。
     - 根据您的需求调整 `default_jobs`（默认的并发级别列表）。
     - 选择您偏好的 `metric_type` (`pss_psutil` 或 `rss_pidstat`)。
 
-2.  **打开 `conf/projects.toml`**:
+2. 打开 `conf/projects.toml`:
     - 查看示例项目（如 `qemu`），并根据您的环境修改 `dir` 字段，使其指向您本地的项目源代码路径。
 
-3.  **运行一次测试 (Run a Test)**:
+3. **运行一次测试 (Run a Test)**:
+
     ```bash
     mymonitor -p qemu -j 4
     ```
+
     如果一切顺利，您应该会在 `logs/` 目录下看到一个新生成的 `run_<timestamp>` 文件夹，其中包含日志和数据文件。
 
 ### 如何添加一个新的监控项目 (How to Add a New Project to Monitor)
 
-1.  **打开 `conf/projects.toml` 文件。**
-2.  在文件末尾添加一个新的 `[[projects]]` 部分。
-3.  填充所有必需的字段。
+1. **打开 `conf/projects.toml` 文件**。
+2. 在文件末尾添加一个新的 `[[projects]]` 部分。
+3. 填充所有必需的字段。
 
 **示例**: 假设您要添加一个名为 `my-kernel` 的项目。
 
@@ -159,18 +164,18 @@ clean_command_template = "make mrproper"
 
 分类引擎根据 `conf/rules.toml` 中的规则进行工作。规则按 `priority` 字段降序处理，**第一个匹配的规则生效**。
 
-1.  **打开 `conf/rules.toml` 文件。**
-2.  要修改现有规则，只需找到对应的 `[[rules]]` 部分并编辑其字段。
-3.  要添加新规则，请在文件中添加一个新的 `[[rules]]` 部分。
+1. **打开 `conf/rules.toml` 文件。**
+2. 要修改现有规则，只需找到对应的 `[[rules]]` 部分并编辑其字段。
+3. 要添加新规则，请在文件中添加一个新的 `[[rules]]` 部分。
 
 **关键字段解释**:
 
--   `major_category`: 宽泛的类别 (e.g., `CPP_Compile`, `BuildSystem`).
--   `category`: 具体的子类别 (e.g., `GCCInternalCompiler`, `Ninja`).
--   `priority`: **最重要的字段**。高优先级的规则会先被检查。这允许您为通用命令（如 `gcc`）创建精细的、基于参数的规则，同时也有一个低优先级的通用后备规则。
--   `match_field`: 要匹配的进程属性 (`current_cmd_name`, `current_cmd_full`, `orig_cmd_name`, `orig_cmd_full`).
--   `match_type`: 匹配方式 (`exact`, `contains`, `startswith`, `endswith`, `regex`, `in_list`).
--   `pattern` / `patterns`: 用于匹配的字符串或字符串列表。
+- `major_category`: 宽泛的类别 (e.g., `CPP_Compile`, `BuildSystem`).
+- `category`: 具体的子类别 (e.g., `GCCInternalCompiler`, `Ninja`).
+- `priority`: **最重要的字段**。高优先级的规则会先被检查。这允许您为通用命令（如 `gcc`）创建精细的、基于参数的规则，同时也有一个低优先级的通用后备规则。
+- `match_field`: 要匹配的进程属性 (`current_cmd_name`, `current_cmd_full`, `orig_cmd_name`, `orig_cmd_full`).
+- `match_type`: 匹配方式 (`exact`, `contains`, `startswith`, `endswith`, `regex`, `in_list`).
+- `pattern` / `patterns`: 用于匹配的字符串或字符串列表。
 
 **示例**: 假设您的构建系统使用一个名为 `super-linker` 的特殊链接器，您想将其分类。
 
@@ -228,21 +233,21 @@ Each run creates a unique, timestamped directory inside `log_root_dir` (default:
 
 该目录包含：
 
--   **`*_summary.log`**: 人类可读的摘要文件，包含运行配置、构建命令的输出、峰值内存统计和分类摘要。
--   **`*.parquet`**: 高性能的列式数据文件，包含每次采样间隔收集到的所有原始数据。可用于 `pandas` 或 `polars` 进行深入分析。
--   **`*.html`**: 交互式的 Plotly 图表，可视化内存使用情况。
--   **`*.png`** (如果安装了 `kaleido`): 图表的静态图片版本。
+- **`*_summary.log`**: 人类可读的摘要文件，包含运行配置、构建命令的输出、峰值内存统计和分类摘要。
+- **`*.parquet`**: 高性能的列式数据文件，包含每次采样间隔收集到的所有原始数据。可用于 `pandas` 或 `polars` 进行深入分析。
+- **`*.html`**: 交互式的 Plotly 图表，可视化内存使用情况。
+- **`*.png`** (如果安装了 `kaleido`): 图表的静态图片版本。
 
 ---
 
 ## 工作原理 (How It Works)
 
-1.  **初始化 (Initialization)**: `main.py` 解析命令行参数，并加载 `config.py` 中的配置。
-2.  **编排 (Orchestration)**: `main.py` 遍历所有选定的项目和并发级别。对于每一次组合，它都会调用 `monitor_utils.py` 中的核心函数 `run_and_monitor_build`。
-3.  **执行与监控 (Execution & Monitoring)**:
-    -   `run_and_monitor_build` 启动构建命令作为一个子进程。
-    -   同时，它根据配置（`pss_psutil` 或 `rss_pidstat`）启动一个内存收集器。
-    -   主监控循环从收集器获取内存样本，并使用 `process_utils.get_process_category` 对每个进程进行分类。
-    -   所有数据被聚合并保存在内存中。
-4.  **报告 (Reporting)**: 构建完成后，聚合的结果被写入 `.parquet` 文件和 `_summary.log` 文件。
-5.  **可视化 (Visualization)**: 最后，`plotter.py` 被调用，读取 `.parquet` 文件并生成 HTML/PNG 图表。
+1.**初始化 (Initialization)**: `main.py` 解析命令行参数，并加载 `config.py` 中的配置。
+2.**编排 (Orchestration)**: `main.py` 遍历所有选定的项目和并发级别。对于每一次组合，它都会调用 `monitor_utils.py` 中的核心函数 `run_and_monitor_build`。
+3.**执行与监控 (Execution & Monitoring)**:
+    - `run_and_monitor_build` 启动构建命令作为一个子进程。
+    - 同时，它根据配置（`pss_psutil` 或 `rss_pidstat`）启动一个内存收集器。
+    - 主监控循环从收集器获取内存样本，并使用 `process_utils.get_process_category` 对每个进程进行分类。
+    - 所有数据被聚合并保存在内存中。
+4.**报告 (Reporting)**: 构建完成后，聚合的结果被写入 `.parquet` 文件和 `_summary.log` 文件。
+5.**可视化 (Visualization)**: 最后，`plotter.py` 被调用，读取 `.parquet` 文件并生成 HTML/PNG 图表。
