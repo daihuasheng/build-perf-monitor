@@ -21,6 +21,7 @@ import argparse
 import logging
 import psutil
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -35,7 +36,6 @@ from .monitor_utils import (
     cleanup_processes,
     run_and_monitor_build,
 )
-from .plotter import generate_plots_for_logs
 from .process_utils import check_pidstat_installed
 
 # --- Logging Setup ---
@@ -302,13 +302,39 @@ def main_cli() -> None:
     # --- Finalization ---
     # Generate plots from the collected data unless skipped.
     if not monitor_config.skip_plots:
-        logger.info("--- Starting plot generation ---")
+        logger.info("--- Starting plot generation via external tool ---")
+        # Execute the plotter tool as a separate process.
+        # This decouples the main application from the plotting logic.
+        plotter_script_path = Path(__file__).parent.parent.parent / "tools" / "plotter.py"
         try:
-            generate_plots_for_logs(current_run_output_dir)
+            # Use sys.executable to ensure the same Python interpreter is used.
+            command = [
+                sys.executable,
+                str(plotter_script_path),
+                "--log-dir",
+                str(current_run_output_dir),
+            ]
+            logger.info(f"Executing plotter command: {' '.join(command)}")
+            result = subprocess.run(
+                command,
+                check=True,  # Raise an exception if the plotter fails
+                capture_output=True,
+                text=True,
+            )
+            logger.info("Plotter tool output:\n" + result.stdout)
+            if result.stderr:
+                logger.warning("Plotter tool stderr:\n" + result.stderr)
             logger.info("--- Plot generation finished ---")
+        except FileNotFoundError:
+            logger.error(f"Plotter script not found at: {plotter_script_path}")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Plot generation tool failed with exit code {e.returncode}:")
+            logger.error("STDOUT:\n" + e.stdout)
+            logger.error("STDERR:\n" + e.stderr)
         except Exception as e:
             logger.error(
-                f"An error occurred during plot generation: {e}", exc_info=True
+                f"An unexpected error occurred during plot generation: {e}",
+                exc_info=True,
             )
     else:
         logger.info("Skipping plot generation as per config or command-line flag.")
