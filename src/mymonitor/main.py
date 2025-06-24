@@ -305,25 +305,43 @@ def main_cli() -> None:
         logger.info("--- Starting plot generation via external tool ---")
         # Execute the plotter tool as a separate process.
         # This decouples the main application from the plotting logic.
-        plotter_script_path = Path(__file__).parent.parent.parent / "tools" / "plotter.py"
+        plotter_script_path = (
+            Path(__file__).parent.parent.parent / "tools" / "plotter.py"
+        )
         try:
-            # Use sys.executable to ensure the same Python interpreter is used.
+            # --- Call 1: Generate detailed per-file plots (existing logic) ---
             command = [
                 sys.executable,
                 str(plotter_script_path),
                 "--log-dir",
                 str(current_run_output_dir),
             ]
-            logger.info(f"Executing plotter command: {' '.join(command)}")
+            logger.info(f"Executing plotter for detailed plots: {' '.join(command)}")
             result = subprocess.run(
                 command,
-                check=True,  # Raise an exception if the plotter fails
+                check=True,
                 capture_output=True,
                 text=True,
             )
-            logger.info("Plotter tool output:\n" + result.stdout)
+            logger.info("Detailed plotter tool output:\n" + result.stdout)
             if result.stderr:
-                logger.warning("Plotter tool stderr:\n" + result.stderr)
+                logger.warning("Detailed plotter tool stderr:\n" + result.stderr)
+
+            # --- Call 2: Generate the new summary plot ---
+            summary_command = command + ["--summary-plot"]
+            logger.info(
+                f"Executing plotter for summary plot: {' '.join(summary_command)}"
+            )
+            summary_result = subprocess.run(
+                summary_command,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            logger.info("Summary plotter tool output:\n" + summary_result.stdout)
+            if summary_result.stderr:
+                logger.warning("Summary plotter tool stderr:\n" + summary_result.stderr)
+
             logger.info("--- Plot generation finished ---")
         except FileNotFoundError:
             logger.error(f"Plotter script not found at: {plotter_script_path}")

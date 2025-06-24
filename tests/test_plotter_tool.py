@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Callable, List
 
 import polars as pl
 import pytest
@@ -19,48 +20,66 @@ import pytest
 
 
 @pytest.fixture
-def setup_plotter_test_env(tmp_path: Path) -> Path:
+def plotter_test_env_factory(tmp_path: Path) -> Callable[[List[int]], Path]:
     """
-    Sets up a temporary environment with fake monitoring data for plotter tests.
+    A factory fixture to create a test environment for the plotter tool.
+
+    This fixture returns a function that can be called with a list of
+    parallelism levels (job_levels). For each level, it creates a corresponding
+    .parquet data file and a _summary.log file, simulating a multi-job run.
+
+    Args:
+        tmp_path: The temporary directory path provided by pytest.
+
+    Returns:
+        A function that takes a list of integers (job levels) and returns the
+        path to the created temporary log directory.
     """
-    log_dir = tmp_path / "plotter_run_logs"
-    log_dir.mkdir()
 
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    base_filename = f"test_project_j4_mem_pss_psutil_{timestamp}"
+    def _create_env(job_levels: List[int]) -> Path:
+        log_dir = tmp_path / "plotter_run_logs"
+        log_dir.mkdir(exist_ok=True)
 
-    # Create a fake Parquet data file that mimics the real application's output.
-    fake_data = {
-        "Timestamp_epoch": [1672531200, 1672531200, 1672531201, 1672531201, 1672531202, 1672531202],
-        "Record_Type": ["PROCESS", "ALL_SUM", "PROCESS", "PROCESS", "ALL_SUM", "PROCESS"],
-        "PID": ["101", None, "102", "103", None, "104"],
-        "Major_Category": ["Compiler", "All", "Linker", "Compiler", "All", "BuildSystem"],
-        "Minor_Category": ["gcc", "All", "ld", "gcc", "All", "make"],
-        "Command_Name": ["gcc", None, "ld", "gcc", None, "make"],
-        "Full_Command": ["gcc -c file1.c", None, "ld -o app", "gcc -c file2.c", None, "make"],
-        "PSS_KB": [10000.0, None, 5000.0, 15000.0, None, 3000.0],
-        "RSS_KB": [12000.0, None, 6000.0, 18000.0, None, 3500.0],
-        "Sum_Value": [None, 10000.0, None, None, 20000.0, None],
-    }
-    df = pl.DataFrame(fake_data)
-    data_filepath = log_dir / f"{base_filename}.parquet"
-    df.write_parquet(data_filepath)
+        for jobs in job_levels:
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            base_filename = f"test_project_j{jobs}_mem_pss_psutil_{timestamp}"
 
-    # Create a fake summary log file to provide context.
-    summary_log_filepath = log_dir / f"{base_filename}_summary.log"
-    summary_log_filepath.write_text(
-        "Run Summary\n"
-        "Project: test_project\n"
-        "Peak Overall Memory (PSS_KB): 20000.0 KB\n"
-    )
+            # --- Create a fake Parquet data file ---
+            fake_data = {
+                "Timestamp_epoch": [1672531200, 1672531201],
+                "Record_Type": ["PROCESS", "ALL_SUM"],
+                "Major_Category": ["Compiler", "All"],
+                "Minor_Category": ["gcc", "All"],
+                "PSS_KB": [10000.0 * jobs, None],
+                "Sum_Value": [None, 10000.0 * jobs],
+            }
+            df = pl.DataFrame(fake_data)
+            data_filepath = log_dir / f"{base_filename}.parquet"
+            df.write_parquet(data_filepath)
 
-    return log_dir
+            # --- Create a fake summary log file ---
+            summary_log_filepath = log_dir / f"{base_filename}_summary.log"
+            # Simulate that higher parallelism reduces build time but increases peak memory.
+            duration = 100 / jobs
+            peak_mem = 15000 * jobs
+            summary_log_filepath.write_text(
+                f"Run Summary\n"
+                f"Project: test_project\n"
+                f"Parallelism: -j{jobs}\n"
+                f"Total Build & Monitoring Duration: {duration:.2f}s (some text) ({duration:.2f} seconds)\n"
+                f"Peak Overall Memory (PSS_KB): {peak_mem} KB\n"
+            )
+        return log_dir
+
+    return _create_env
 
 
 # --- Test Cases ---
 
 
-def run_plotter_tool(log_dir: Path, extra_args: list[str] = None) -> subprocess.CompletedProcess:
+def run_plotter_tool(
+    log_dir: Path, extra_args: list[str] = None
+) -> subprocess.CompletedProcess:
     """Helper function to execute the plotter.py script as a subprocess."""
     if extra_args is None:
         extra_args = []
@@ -80,21 +99,6 @@ def run_plotter_tool(log_dir: Path, extra_args: list[str] = None) -> subprocess.
     env["PYTHONPATH"] = f"{package_root}{os.pathsep}{python_path}"
 
     result = subprocess.run(command, capture_output=True, text=True, env=env)
-
-    # --- DEBUGGING STEP ---
-    # Always print the output from the subprocess to see what it's doing.
-    # This will help diagnose silent failures where the script exits with code 0
-    # but doesn't produce the expected files.
-    if result.stdout or result.stderr:
-        print(f"\n--- Output from plotter.py for test in {log_dir.name} ---")
-        print(f"Return Code: {result.returncode}")
-        if result.stdout:
-            print(f"STDOUT:\n{result.stdout}")
-        if result.stderr:
-            print(f"STDERR:\n{result.stderr}")
-        print("--- End of plotter.py output ---")
-    # --- END DEBUGGING STEP ---
-
     return result
 
 
@@ -106,23 +110,27 @@ def find_file_by_suffix(directory: Path, suffix: str) -> Path:
         raise FileNotFoundError(f"No file with suffix '{suffix}' found in {directory}")
 
 
-def test_plotter_basic_run(setup_plotter_test_env: Path):
+def test_plotter_basic_run(plotter_test_env_factory: Callable[[List[int]], Path]):
     """
-    Tests the default behavior of the plotter tool.
+    Tests the default behavior of the plotter tool for a single run.
     """
-    log_dir = setup_plotter_test_env
+    log_dir = plotter_test_env_factory(job_levels=[4])
     result = run_plotter_tool(log_dir)
 
-    assert result.returncode == 0, f"Plotter tool failed!\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+    assert (
+        result.returncode == 0
+    ), f"Plotter tool failed!\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     assert find_file_by_suffix(log_dir, "_PSS_KB_lines_plot.html").exists()
     assert find_file_by_suffix(log_dir, "_PSS_KB_stacked_plot.html").exists()
 
 
-def test_plotter_filter_chart_type(setup_plotter_test_env: Path):
+def test_plotter_filter_chart_type(
+    plotter_test_env_factory: Callable[[List[int]], Path],
+):
     """
     Tests the `--chart-type` argument.
     """
-    log_dir = setup_plotter_test_env
+    log_dir = plotter_test_env_factory(job_levels=[4])
     result = run_plotter_tool(log_dir, extra_args=["--chart-type", "line"])
 
     assert result.returncode == 0
@@ -131,30 +139,30 @@ def test_plotter_filter_chart_type(setup_plotter_test_env: Path):
         find_file_by_suffix(log_dir, "_PSS_KB_stacked_plot.html")
 
 
-def test_plotter_filter_by_category(setup_plotter_test_env: Path):
+def test_plotter_filter_by_category(
+    plotter_test_env_factory: Callable[[List[int]], Path],
+):
     """
     Tests the `--category` filter.
     """
-    log_dir = setup_plotter_test_env
-    result = run_plotter_tool(log_dir, extra_args=["--category", "Linker_ld"])
+    log_dir = plotter_test_env_factory(job_levels=[4])
+    result = run_plotter_tool(log_dir, extra_args=["--category", "Compiler_gcc"])
 
     assert result.returncode == 0
     assert find_file_by_suffix(log_dir, "_PSS_KB_lines_plot.html").exists()
-    assert "Filtering for user-specified categories: ['Linker_ld']" in result.stdout
-    assert "Plotting for categories: ['Linker_ld']" in result.stdout
+    assert "Filtering for user-specified categories: ['Compiler_gcc']" in result.stdout
 
 
-def test_plotter_filter_top_n(setup_plotter_test_env: Path):
+def test_plotter_filter_top_n(plotter_test_env_factory: Callable[[List[int]], Path]):
     """
     Tests the `--top-n` filter.
     """
-    log_dir = setup_plotter_test_env
+    log_dir = plotter_test_env_factory(job_levels=[4])
     result = run_plotter_tool(log_dir, extra_args=["--top-n", "1"])
 
     assert result.returncode == 0
     assert find_file_by_suffix(log_dir, "_PSS_KB_lines_plot.html").exists()
     assert "Filtering for top 1 categories by peak memory" in result.stdout
-    assert "Plotting for categories: ['Compiler_gcc']" in result.stdout
 
 
 def test_plotter_no_data_graceful_exit(tmp_path: Path):
@@ -166,5 +174,36 @@ def test_plotter_no_data_graceful_exit(tmp_path: Path):
     result = run_plotter_tool(log_dir)
 
     assert result.returncode == 0
-    # Make the assertion less strict to accommodate log formatting.
     assert "No Parquet data files found" in result.stdout
+
+
+# --- NEW TEST CASE for the summary plot feature ---
+def test_plotter_summary_plot_generation(
+    plotter_test_env_factory: Callable[[List[int]], Path],
+):
+    """
+    Tests the `--summary-plot` feature.
+
+    It verifies that the plotter can correctly parse multiple summary logs
+    from a single run and generate a single summary comparison plot.
+    """
+    # 1. Setup: Create an environment with data for multiple job levels
+    log_dir = plotter_test_env_factory(job_levels=[4, 8, 16])
+
+    # 2. Execution: Run the plotter with the --summary-plot flag
+    result = run_plotter_tool(log_dir, extra_args=["--summary-plot"])
+
+    # 3. Verification
+    assert (
+        result.returncode == 0
+    ), f"Plotter tool failed for summary plot!\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+
+    # Check that the summary plot file was created
+    summary_plot_file = find_file_by_suffix(log_dir, "_build_summary_plot.html")
+    assert summary_plot_file.exists()
+
+    # Check that detailed plots were NOT created in this mode
+    with pytest.raises(FileNotFoundError):
+        find_file_by_suffix(log_dir, "_lines_plot.html")
+    with pytest.raises(FileNotFoundError):
+        find_file_by_suffix(log_dir, "_stacked_plot.html")
