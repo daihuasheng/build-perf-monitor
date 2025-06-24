@@ -286,7 +286,7 @@ class RssPidstatCollector(AbstractMemoryCollector):
                 # Takes the first part of the command and then its basename.
                 cmd_name_parts = cmd_full_str.split(None, 1)
                 cmd_name_short: str = (
-                    os.path.basename(cmd_name_parts[0]) if cmd_name_parts else "unknown"
+                    Path(cmd_name_parts[0]).name if cmd_name_parts else "unknown"
                 )
 
                 metrics: Dict[str, Any] = {
