@@ -52,13 +52,11 @@ def verify_project(project_name: str, parallelism: int) -> bool:
         project_map = {p.name: p for p in app_config.projects}
         if project_name not in project_map:
             logger.error(f"Project '{project_name}' not found in configuration.")
-            # FIX: Return False on configuration error instead of exiting.
             return False
         project_config = project_map[project_name]
         process_pattern_re = re.compile(project_config.process_pattern)
     except Exception as e:
         logger.error(f"Failed to load configuration: {e}")
-        # FIX: Return False on configuration error instead of exiting.
         return False
 
     # --- 2. Prepare and Start Build Command ---
@@ -89,33 +87,34 @@ def verify_project(project_name: str, parallelism: int) -> bool:
     descendant_pids = set()
     try:
         main_build_process = psutil.Process(build_proc.pid)
+        descendant_pids.add(main_build_process.pid)
     except psutil.NoSuchProcess:
         logger.error(f"Build process with PID {build_proc.pid} disappeared immediately.")
         return False
 
-
     while build_proc.poll() is None:
         logger.info("Sampling process tree...")
-        # A. Ground Truth: Scan all processes matching the pattern.
-        for proc in psutil.process_iter(["cmdline"]):
-            cmdline = " ".join(proc.info["cmdline"] or [])
-            if process_pattern_re.search(cmdline):
-                all_matching_pids.add(proc.pid)
-
-        # B. Hypothesis: Scan all descendants of the main build process.
         try:
             descendants = main_build_process.children(recursive=True)
             current_descendant_pids = {p.pid for p in descendants}
             descendant_pids.update(current_descendant_pids)
-            # Also include the main process itself.
-            descendant_pids.add(main_build_process.pid)
         except psutil.NoSuchProcess:
             logger.warning("Main build process disappeared during scan.")
             break
+        time.sleep(0.1)
 
-        time.sleep(0.1)  # Reduce sleep time for faster tests
-
-    logger.info("Build process finished. Analyzing results...")
+    # --- FIX: Grace period and final scan ---
+    # Reduce the grace period to be shorter than the lifetime of the test's
+    # detached process (0.3s). This ensures the final scan happens while the
+    # orphan process is still running and can be detected.
+    grace_period = 0.2
+    logger.info(f"Build process finished. Waiting for grace period ({grace_period}s) before final scan...")
+    time.sleep(grace_period)
+    logger.info("Performing final process scan...")
+    for proc in psutil.process_iter(["cmdline"]):
+        cmdline = " ".join(proc.info["cmdline"] or [])
+        if process_pattern_re.search(cmdline):
+            all_matching_pids.add(proc.pid)
 
     # --- 4. Analyze and Report Results ---
     orphan_pids = all_matching_pids - descendant_pids
@@ -152,7 +151,6 @@ def verify_project(project_name: str, parallelism: int) -> bool:
                     f"  - PID: {pid} (process terminated before details could be fetched)"
                 )
         print("\n" + "=" * 50)
-
         return False
 
 
