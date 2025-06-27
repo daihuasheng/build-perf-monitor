@@ -209,10 +209,8 @@ def run_and_monitor_build(
         )
         run_context.build_process_pid = current_build_proc.pid
 
-        # Pass the build process PID to the collector if it needs it.
-        if local_active_memory_collector and hasattr(
-            local_active_memory_collector, "build_process_pid"
-        ):
+        # Pass the build process PID to the collector.
+        if local_active_memory_collector:
             local_active_memory_collector.build_process_pid = current_build_proc.pid
 
         active_memory_collector = local_active_memory_collector

@@ -64,6 +64,8 @@ class AbstractMemoryCollector(ABC):
         self.collector_cpu_core: Optional[int] = kwargs.pop("collector_cpu_core", None)
         self.taskset_available: bool = kwargs.pop("taskset_available", False)
         self.collector_kwargs = kwargs
+        # The PID of the main build process, to be set after the process starts.
+        self.build_process_pid: Optional[int] = None
         logger.info(
             f"Initializing {self.__class__.__name__} with pattern: '{process_pattern}', "
             f"interval: {monitoring_interval}s, collector_cpu_core: {self.collector_cpu_core}, "
