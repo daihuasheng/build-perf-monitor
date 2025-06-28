@@ -26,7 +26,6 @@ import psutil
 # Add the project root to the Python path to allow importing 'mymonitor' modules.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from mymonitor import config
-from mymonitor.process_utils import run_command
 
 # --- Logging Setup ---
 logging.basicConfig(

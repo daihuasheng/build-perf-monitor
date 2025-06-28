@@ -203,7 +203,6 @@ class PssPsutilCollector(AbstractMemoryCollector):
         while True:
             interval_start_time = time.monotonic()
             current_interval_samples: List[ProcessMemorySample] = []
-            processed_pids: Set[int] = set()
 
             # --- OPTIMIZATION: Execute logic based on the configured mode ---
             if self.mode == "descendants_only" and self.build_process_pid:

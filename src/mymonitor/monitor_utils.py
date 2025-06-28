@@ -27,7 +27,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, IO, List, Optional, Tuple, Set, Union
+from typing import Any, Dict, IO, List, Optional, Tuple, Set
 
 # Import local modules
 from . import config
