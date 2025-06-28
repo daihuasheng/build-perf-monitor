@@ -17,6 +17,7 @@ from typing import (
     Optional,
     Iterable,
     IO,
+    Union,
 )
 
 from .base import AbstractMemoryCollector, ProcessMemorySample
@@ -44,7 +45,7 @@ class RssPidstatCollector(AbstractMemoryCollector):
     PIDSTAT_METRIC_FIELDS: List[str] = ["RSS_KB", "VSZ_KB"]
     """Defines the memory metric fields collected by this implementation."""
 
-    def __init__(self, process_pattern: str, monitoring_interval: int, **kwargs):
+    def __init__(self, process_pattern: str, monitoring_interval: float, **kwargs):
         """
         Initializes the RssPidstatCollector.
 
@@ -119,7 +120,7 @@ class RssPidstatCollector(AbstractMemoryCollector):
         pidstat_env = os.environ.copy()
         pidstat_env["LC_ALL"] = "C"
 
-        stderr_dest: Optional[IO[Any]] = None  # Default to None
+        stderr_dest: Optional[Union[int, IO[Any]]] = None  # Default to None
         if self.pidstat_stderr_file:
             try:
                 # Open the stderr log file in write mode.

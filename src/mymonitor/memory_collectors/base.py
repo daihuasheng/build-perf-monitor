@@ -45,7 +45,7 @@ class AbstractMemoryCollector(ABC):
     matching a given pattern.
     """
 
-    def __init__(self, process_pattern: str, monitoring_interval: int, **kwargs):
+    def __init__(self, process_pattern: str, monitoring_interval: float, **kwargs):
         """
         Initializes the AbstractMemoryCollector.
 
