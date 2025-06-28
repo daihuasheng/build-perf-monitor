@@ -480,7 +480,7 @@ def _create_memory_collector(context: RunContext) -> Optional[AbstractMemoryColl
             active_memory_collector = PssPsutilCollector(
                 process_pattern=context.process_pattern,
                 monitoring_interval=context.monitoring_interval,
-                mode=config.get_config().monitor.pss_collector_mode, # Pass the mode
+                mode=config.get_config().monitor.pss_collector_mode,
                 **collector_kwargs,
             )
         elif context.collector_type == "rss_pidstat":

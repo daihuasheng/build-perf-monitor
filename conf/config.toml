@@ -1,21 +1,25 @@
 # Main configuration for the MyMonitor application.
 
 # ===================================================================
-# Monitor-wide settings
+# Monitor-wide settings, now organized into sub-sections.
 # ===================================================================
-[monitor]
-interval_seconds = 0.05
+[monitor.general]
+# A list of parallelism levels (-j values) to run if none are specified on the command line.
 default_jobs = [4, 8, 16]
-metric_type = "pss_psutil"
-monitor_core = 0
-build_cores_policy = "all_others"
-specific_build_cores = ""
+# If True, plot generation will be skipped after the monitoring run.
 skip_plots = false
+# The root directory where all run logs and plots will be saved.
 log_root_dir = "logs"
 # The maximum number of unique command lines to cache for process categorization.
 # A larger size may use more memory but can improve performance on extremely
 # complex builds with a huge variety of commands. Default is 4096.
 categorization_cache_size = 4096
+
+[monitor.collection]
+# The time in seconds between each memory sample. Can be a float.
+interval_seconds = 0.05
+# The type of memory collector to use ('pss_psutil' or 'rss_pidstat').
+metric_type = "pss_psutil"
 # Defines the scanning mode for the pss_psutil collector.
 # - "full_scan": (Default, Safe) Scans all system processes that match the
 #   project's process_pattern. This is robust but can be slow.
@@ -25,9 +29,22 @@ categorization_cache_size = 4096
 #   tool to check if this mode is safe for your project.
 pss_collector_mode = "full_scan"
 
+[monitor.scheduling]
+# The CPU core to pin the main monitor script and collectors to.
+# Use -1 to disable pinning.
+monitor_core = 0
+# The policy for assigning CPU cores to the build process.
+# - "all_others": (Default) Use all cores *not* used by the monitor.
+# - "specific": Use the cores defined in 'specific_build_cores'.
+# - "none": Do not apply any CPU affinity to the build process.
+build_cores_policy = "all_others"
+# A string defining specific cores for the build (e.g., '1,2,4-7')
+# This is only used if the policy is 'specific'.
+specific_build_cores = ""
+
+
 # ===================================================================
 # Paths to specialized configuration files
-# These paths are relative to this config.toml file.
 # ===================================================================
 [paths]
 projects_config = "projects.toml"

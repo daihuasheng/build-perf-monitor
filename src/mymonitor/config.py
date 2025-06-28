@@ -68,17 +68,32 @@ def _load_config(config_path: Path) -> AppConfig:
         with open(config_path, "rb") as f:
             data = tomllib.load(f)
 
-        # --- Load Monitor Config (from the main config file) ---
+        # --- Load Monitor Config (from the new nested structure) ---
         monitor_data = data.get("monitor", {})
+        general_settings = monitor_data.get("general", {})
+        collection_settings = monitor_data.get("collection", {})
+        scheduling_settings = monitor_data.get("scheduling", {})
+
         monitor_config = MonitorConfig(
-            interval_seconds=monitor_data.get("interval_seconds", 1),
-            default_jobs=monitor_data.get("default_jobs", [4, 8, 16]),
-            metric_type=monitor_data.get("metric_type", "pss_psutil"),
-            monitor_core=monitor_data.get("monitor_core", 0),
-            build_cores_policy=monitor_data.get("build_cores_policy", "all_others"),
-            specific_build_cores=monitor_data.get("specific_build_cores", ""),
-            skip_plots=monitor_data.get("skip_plots", False),
-            log_root_dir=Path(monitor_data.get("log_root_dir", "logs")),
+            # from [monitor.collection]
+            interval_seconds=collection_settings.get("interval_seconds", 1),
+            metric_type=collection_settings.get("metric_type", "pss_psutil"),
+            pss_collector_mode=collection_settings.get(
+                "pss_collector_mode", "full_scan"
+            ),
+            # from [monitor.scheduling]
+            monitor_core=scheduling_settings.get("monitor_core", 0),
+            build_cores_policy=scheduling_settings.get(
+                "build_cores_policy", "all_others"
+            ),
+            specific_build_cores=scheduling_settings.get("specific_build_cores", ""),
+            # from [monitor.general]
+            default_jobs=general_settings.get("default_jobs", [4, 8, 16]),
+            skip_plots=general_settings.get("skip_plots", False),
+            log_root_dir=Path(general_settings.get("log_root_dir", "logs")),
+            categorization_cache_size=general_settings.get(
+                "categorization_cache_size", 4096
+            ),
         )
 
         # --- Load Projects and Rules from referenced files ---

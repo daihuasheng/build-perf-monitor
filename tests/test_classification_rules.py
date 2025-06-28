@@ -1,34 +1,55 @@
 import pytest
 from pathlib import Path
+import tomllib
 
-# Import the function to be tested and the config loader
+# Import the function to be tested and the necessary data models
 from mymonitor.process_utils import get_process_category
+from mymonitor.data_models import AppConfig, RuleConfig, MonitorConfig
 from mymonitor import config
 
 
 @pytest.fixture
 def app_config_real_rules(monkeypatch):
     """
-    Fixture to load the real application configuration from conf/rules.toml.
-    It uses monkeypatch to ensure that the config is reloaded for each test,
-    providing isolation.
+    Fixture that loads the REAL rules from conf/rules.toml and provides them
+    in a controlled AppConfig object.
+
+    This approach isolates the test from the main config.toml and projects.toml,
+    making it robust against changes in those files. It focuses solely on
+    testing the categorization rules.
     """
-    # The root of the project where conf/ is located.
-    # This assumes tests are run from the project root.
     project_root = Path(__file__).parent.parent
-    config_file_path = project_root / "conf" / "config.toml"
+    rules_file_path = project_root / "conf" / "rules.toml"
 
-    # 1. Force the config module to use the real config.toml file path.
-    monkeypatch.setattr("mymonitor.config._CONFIG_FILE_PATH", config_file_path)
-    # 2. IMPORTANT: Reset the global _CONFIG singleton to None so that get_config()
-    #    is forced to reload from the real path.
-    monkeypatch.setattr(config, "_CONFIG", None)
+    with open(rules_file_path, "rb") as f:
+        rules_data = tomllib.load(f)
 
-    # Yield the loaded config to the test function.
-    yield config.get_config()
+    # Load and sort rules just like the real config loader does.
+    rules_config = [RuleConfig(**r) for r in rules_data.get("rules", [])]
+    rules_config.sort(key=lambda r: r.priority, reverse=True)
 
-    # Teardown: Reset the singleton again after the test to ensure no state
-    # leaks to other test files.
+    # Create a minimal, mock AppConfig. We only need the 'rules' part to be real.
+    mock_app_config = AppConfig(
+        monitor=MonitorConfig(  # Dummy data for MonitorConfig
+            interval_seconds=1,
+            default_jobs=[],
+            metric_type="",
+            monitor_core=-1,
+            build_cores_policy="",
+            specific_build_cores="",
+            skip_plots=True,
+            log_root_dir=Path("/tmp"),
+            categorization_cache_size=1,
+            pss_collector_mode="",
+        ),
+        projects=[],  # Projects are not needed for this test
+        rules=rules_config,  # Use the real rules
+    )
+
+    # Inject the controlled config object, bypassing the file loader.
+    monkeypatch.setattr(config, "_CONFIG", mock_app_config)
+    yield mock_app_config
+    # Clean up after the test.
     monkeypatch.setattr(config, "_CONFIG", None)
 
 

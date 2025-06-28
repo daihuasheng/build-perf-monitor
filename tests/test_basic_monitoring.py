@@ -97,16 +97,22 @@ def setup_test_config_files(tmp_path: Path) -> Path:
 
     # 3. Create the main config.toml that points to the other config files.
     # It also defines test-specific settings like a short monitoring interval
-    # and the output log directory.
+    # and the output log directory, following the new nested structure.
     main_config_data = {
         "monitor": {
-            "interval_seconds": 0.1,  # Use a shorter interval for faster tests.
-            "default_jobs": [1],
-            "metric_type": "pss_psutil",
-            "monitor_core": -1,
-            "build_cores_policy": "none",
-            "skip_plots": True,
-            "log_root_dir": str(tmp_path / "logs_output"),
+            "general": {
+                "default_jobs": [1],
+                "skip_plots": True,
+                "log_root_dir": str(tmp_path / "logs_output"),
+            },
+            "collection": {
+                "interval_seconds": 0.1,
+                "metric_type": "pss_psutil",
+            },
+            "scheduling": {
+                "monitor_core": -1,
+                "build_cores_policy": "none",
+            },
         },
         "paths": {
             "projects_config": "projects.toml",
