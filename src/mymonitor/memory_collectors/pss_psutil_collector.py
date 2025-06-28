@@ -61,7 +61,7 @@ class PssPsutilCollector(AbstractMemoryCollector):
         # This list tells psutil.process_iter which process attributes to pre-fetch
         # for performance. These are the attributes needed by _get_sample_for_process.
         self._iter_attrs = ["pid", "name", "cmdline"]
-        
+
         # Store the main build process PID for the optimization.
         self.build_process_pid: Optional[int] = kwargs.get("build_process_pid")
         self._collecting: bool = False
@@ -209,7 +209,9 @@ class PssPsutilCollector(AbstractMemoryCollector):
                 # --- FAST PATH: Only scan descendants of the main build process ---
                 try:
                     parent_proc = psutil.Process(self.build_process_pid)
-                    for p in itertools.chain([parent_proc], parent_proc.children(recursive=True)):
+                    for p in itertools.chain(
+                        [parent_proc], parent_proc.children(recursive=True)
+                    ):
                         sample = self._get_sample_for_process(p)
                         if sample:
                             current_interval_samples.append(sample)
@@ -218,13 +220,15 @@ class PssPsutilCollector(AbstractMemoryCollector):
                         f"Main build process PID {self.build_process_pid} disappeared. "
                         "Consider using 'full_scan' mode if processes are missed."
                     )
-                    self.build_process_pid = None # Fallback to full scan next time
+                    self.build_process_pid = None  # Fallback to full scan next time
                 except Exception as e:
                     logger.warning(f"Error scanning descendants: {e}", exc_info=False)
             else:
                 # --- SAFE PATH (DEFAULT): Scan all system processes ---
                 if self.mode == "descendants_only" and not self.build_process_pid:
-                    logger.debug("descendants_only mode is active, but no build PID is set. Performing full scan.")
+                    logger.debug(
+                        "descendants_only mode is active, but no build PID is set. Performing full scan."
+                    )
 
                 for proc in psutil.process_iter(self._iter_attrs):
                     if self._stop_event:

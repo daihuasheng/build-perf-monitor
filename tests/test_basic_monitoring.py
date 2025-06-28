@@ -172,9 +172,9 @@ def test_basic_monitoring_run(setup_test_config_files: Path, monkeypatch, capsys
 
     # Find the unique, timestamped run directory created by the application.
     run_dirs = list(log_root_dir.glob("run_*"))
-    assert (
-        len(run_dirs) == 1
-    ), f"Expected 1 run directory in {log_root_dir}, found {len(run_dirs)}"
+    assert len(run_dirs) == 1, (
+        f"Expected 1 run directory in {log_root_dir}, found {len(run_dirs)}"
+    )
     run_specific_output_dir = run_dirs[0]
     assert run_specific_output_dir.is_dir()
 
@@ -182,9 +182,9 @@ def test_basic_monitoring_run(setup_test_config_files: Path, monkeypatch, capsys
     parquet_files = list(
         run_specific_output_dir.glob("FakeProject_j1_mem_pss_psutil_*.parquet")
     )
-    assert (
-        len(parquet_files) == 1
-    ), f"Expected 1 Parquet file, found {len(parquet_files)} in {run_specific_output_dir}"
+    assert len(parquet_files) == 1, (
+        f"Expected 1 Parquet file, found {len(parquet_files)} in {run_specific_output_dir}"
+    )
     output_parquet_file = parquet_files[0]
     assert output_parquet_file.exists() and output_parquet_file.stat().st_size > 0
 
@@ -207,9 +207,9 @@ def test_basic_monitoring_run(setup_test_config_files: Path, monkeypatch, capsys
     summary_files = list(
         run_specific_output_dir.glob("FakeProject_j1_mem_pss_psutil_*_summary.log")
     )
-    assert (
-        len(summary_files) == 1
-    ), f"Expected 1 summary log file, found {len(summary_files)} in {run_specific_output_dir}"
+    assert len(summary_files) == 1, (
+        f"Expected 1 summary log file, found {len(summary_files)} in {run_specific_output_dir}"
+    )
     summary_log_file = summary_files[0]
     assert summary_log_file.exists() and summary_log_file.stat().st_size > 0
 
@@ -217,15 +217,15 @@ def test_basic_monitoring_run(setup_test_config_files: Path, monkeypatch, capsys
     with open(summary_log_file, "r") as f:
         summary_content = f.read()
         # Check that the build was reported as successful.
-        assert (
-            "Final Build Exit Code: 0" in summary_content
-        ), "Build did not exit successfully according to summary log"
+        assert "Final Build Exit Code: 0" in summary_content, (
+            "Build did not exit successfully according to summary log"
+        )
         # Check for the prefixed output from the main build script.
-        assert (
-            "[STDOUT] Fake build process finished." in summary_content
-        ), "Prefixed fake build output not found in summary log"
+        assert "[STDOUT] Fake build process finished." in summary_content, (
+            "Prefixed fake build output not found in summary log"
+        )
         # Check for the prefixed output from the setup command, confirming that
         # the logging format is consistent across all executed commands.
-        assert (
-            "[STDOUT] Fake setup complete" in summary_content
-        ), "Prefixed setup command output not found in summary log"
+        assert "[STDOUT] Fake setup complete" in summary_content, (
+            "Prefixed setup command output not found in summary log"
+        )

@@ -88,7 +88,9 @@ def verify_project(project_name: str, parallelism: int) -> bool:
         main_build_process = psutil.Process(build_proc.pid)
         descendant_pids.add(main_build_process.pid)
     except psutil.NoSuchProcess:
-        logger.error(f"Build process with PID {build_proc.pid} disappeared immediately.")
+        logger.error(
+            f"Build process with PID {build_proc.pid} disappeared immediately."
+        )
         return False
 
     while build_proc.poll() is None:
@@ -107,7 +109,9 @@ def verify_project(project_name: str, parallelism: int) -> bool:
     # detached process (0.3s). This ensures the final scan happens while the
     # orphan process is still running and can be detected.
     grace_period = 0.2
-    logger.info(f"Build process finished. Waiting for grace period ({grace_period}s) before final scan...")
+    logger.info(
+        f"Build process finished. Waiting for grace period ({grace_period}s) before final scan..."
+    )
     time.sleep(grace_period)
     logger.info("Performing final process scan...")
     for proc in psutil.process_iter(["cmdline"]):

@@ -149,6 +149,7 @@ def run_command(
         logger.error(f"Failed to execute command '{command}': {e}", exc_info=True)
         return -1, "", str(e)
 
+
 # PERFORMANCE FIX: Use an LRU cache to memoize the results of categorization.
 # Process command lines are highly repetitive during a build. Caching the
 # result of the expensive rule-matching logic for a given command name and
@@ -211,7 +212,9 @@ def get_process_category(cmd_name: str, cmd_full: str) -> Tuple[str, str]:
             # This correctly handles commands with quoted paths that contain spaces.
             try:
                 unwrapped_cmd_parts = shlex.split(unwrapped_cmd_full)
-                unwrapped_cmd_name = unwrapped_cmd_parts[0] if unwrapped_cmd_parts else ""
+                unwrapped_cmd_name = (
+                    unwrapped_cmd_parts[0] if unwrapped_cmd_parts else ""
+                )
             except ValueError:
                 # Fallback for shlex errors (e.g., unmatched quotes)
                 unwrapped_cmd_name = unwrapped_cmd_full.split()[0]

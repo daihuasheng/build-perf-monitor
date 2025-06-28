@@ -117,9 +117,9 @@ def test_plotter_basic_run(plotter_test_env_factory: Callable[[List[int]], Path]
     log_dir = plotter_test_env_factory(job_levels=[4])
     result = run_plotter_tool(log_dir)
 
-    assert (
-        result.returncode == 0
-    ), f"Plotter tool failed!\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+    assert result.returncode == 0, (
+        f"Plotter tool failed!\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+    )
     assert find_file_by_suffix(log_dir, "_PSS_KB_lines_plot.html").exists()
     assert find_file_by_suffix(log_dir, "_PSS_KB_stacked_plot.html").exists()
 
@@ -194,9 +194,9 @@ def test_plotter_summary_plot_generation(
     result = run_plotter_tool(log_dir, extra_args=["--summary-plot"])
 
     # 3. Verification
-    assert (
-        result.returncode == 0
-    ), f"Plotter tool failed for summary plot!\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+    assert result.returncode == 0, (
+        f"Plotter tool failed for summary plot!\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+    )
 
     # Check that the summary plot file was created
     summary_plot_file = find_file_by_suffix(log_dir, "_build_summary_plot.html")
