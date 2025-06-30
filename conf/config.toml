@@ -42,6 +42,21 @@ build_cores_policy = "all_others"
 # This is only used if the policy is 'specific'.
 specific_build_cores = ""
 
+# --- NEW: Configuration for Monitoring Worker Processes ---
+# Policy for assigning CPU cores to the monitoring worker processes.
+# 'auto'   -> Automatically selects a number of cores from those *not* used by the build process, ensuring isolation.
+# 'specific' -> Use the exact cores defined in 'specific_monitoring_cores'.
+# 'shared' -> Do not pin monitoring workers; they will share cores with the build process.
+monitoring_cores_policy = "auto"
+
+# Number of cores to use for monitoring workers when policy is 'auto'.
+# A value of 0 means it will default to max(1, num_total_cores / 4).
+num_monitoring_cores = 0
+
+# Specify the exact cores for monitoring workers, e.g., "12-15".
+# Only used if monitoring_cores_policy is 'specific'.
+specific_monitoring_cores = ""
+
 
 # ===================================================================
 # Paths to specialized configuration files

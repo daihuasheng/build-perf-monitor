@@ -34,6 +34,13 @@ class MonitorConfig:
     build_cores_policy: str
     # A string defining specific cores for the build process (e.g., '1,2,4-7') if policy is 'specific'.
     specific_build_cores: str
+    # --- New fields for multi-process monitoring ---
+    # The policy for assigning CPU cores to the monitoring worker processes.
+    monitoring_cores_policy: str
+    # The number of cores to use for monitoring when policy is 'auto'.
+    num_monitoring_cores: int
+    # A string defining specific cores for monitoring (e.g., '8-11') if policy is 'specific'.
+    specific_monitoring_cores: str
     # If True, plot generation will be skipped after the monitoring run.
     skip_plots: bool
     # The root directory where all run logs and plots will be saved.

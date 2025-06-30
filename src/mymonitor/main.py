@@ -7,6 +7,7 @@ import sys
 import time
 from pathlib import Path
 from typing import List
+import multiprocessing
 
 # Local application imports
 from .config import AppConfig, get_config
@@ -33,6 +34,18 @@ def main_cli():
     """
     Main command-line interface for the MyMonitor application.
     """
+    # Set the start method for multiprocessing to 'spawn' to ensure stability
+    # across different platforms and avoid potential deadlocks with fork.
+    # This should be done early, ideally within the `if __name__ == '__main__':` block.
+    # We place it here as it's the main entry point for the CLI.
+    try:
+        multiprocessing.set_start_method("spawn", force=True)
+        logger.info("Set multiprocessing start method to 'spawn'.")
+    except RuntimeError:
+        # The context can only be set once. If it's already set, we can ignore the error.
+        logger.debug("Multiprocessing context already set.")
+        pass
+
     # Directly link the signal to the simple, safe cleanup function
     signal.signal(signal.SIGINT, cleanup_processes)
     signal.signal(signal.SIGTERM, cleanup_processes)
@@ -117,6 +130,9 @@ def main_cli():
                     monitor_core_id_for_collector_and_build_avoidance=monitor_config.monitor_core,
                     build_cpu_cores_policy=monitor_config.build_cores_policy,
                     specific_build_cores_str=monitor_config.specific_build_cores,
+                    monitoring_cores_policy=monitor_config.monitoring_cores_policy,
+                    num_monitoring_cores=monitor_config.num_monitoring_cores,
+                    specific_monitoring_cores=monitor_config.specific_monitoring_cores,
                 )
                 runner.run()
             except Exception as e:

@@ -15,7 +15,7 @@ import re
 import shlex
 import subprocess
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 
 # Local application imports
 from . import config
@@ -103,6 +103,94 @@ def determine_build_cpu_affinity(
         build_command_prefix = f"taskset -c {cores_for_build_taskset_str} "
 
     return build_command_prefix, build_cores_target_str
+
+
+def determine_monitoring_cpu_affinity(
+    monitoring_cores_policy: str,
+    num_monitoring_cores: int,
+    specific_monitoring_cores: str,
+    build_cpu_cores_str: str,
+    total_cores_available: int,
+) -> Tuple[List[int], str]:
+    """
+    Determines the list of CPU cores to be used by monitoring worker processes.
+
+    Args:
+        monitoring_cores_policy: The policy ('auto', 'specific', 'shared').
+        num_monitoring_cores: The desired number of cores if policy is 'auto'.
+        specific_monitoring_cores: A string defining cores if policy is 'specific'.
+        build_cpu_cores_str: The string of cores used by the build process.
+        total_cores_available: The total number of CPU cores on the system.
+
+    Returns:
+        A tuple containing:
+        - A list of integer core IDs for the monitoring workers.
+        - A human-readable description of the allocation.
+    """
+    if monitoring_cores_policy == "shared" or total_cores_available <= 1:
+        return (
+            [],
+            "Shared with build process (no specific pinning for monitoring workers)",
+        )
+
+    all_cores = set(range(total_cores_available))
+    build_cores = set()
+    if build_cpu_cores_str:
+        try:
+            # A simple parser for "1,2,4-7" style strings
+            for part in build_cpu_cores_str.split(","):
+                if "-" in part:
+                    start, end = map(int, part.split("-"))
+                    build_cores.update(range(start, end + 1))
+                else:
+                    build_cores.add(int(part))
+        except ValueError:
+            logger.warning(
+                f"Could not parse build_cpu_cores_str '{build_cpu_cores_str}'. Monitoring may overlap."
+            )
+            build_cores = set()
+
+    available_for_monitoring = sorted(list(all_cores - build_cores))
+    final_monitor_cores = []
+    desc = ""
+
+    if monitoring_cores_policy == "specific":
+        # Logic to parse specific_monitoring_cores string
+        if specific_monitoring_cores:
+            try:
+                for part in specific_monitoring_cores.split(","):
+                    if "-" in part:
+                        start, end = map(int, part.split("-"))
+                        final_monitor_cores.extend(range(start, end + 1))
+                    else:
+                        final_monitor_cores.append(int(part))
+                desc = f"Specific cores: {specific_monitoring_cores}"
+            except ValueError:
+                logger.warning(
+                    f"Invalid 'specific_monitoring_cores' format: '{specific_monitoring_cores}'. Falling back to sharing cores."
+                )
+                return [], "Shared (invalid specific_monitoring_cores format)"
+        else:
+            logger.warning(
+                "Policy is 'specific' but 'specific_monitoring_cores' is empty. Sharing cores."
+            )
+            return [], "Shared (specific_monitoring_cores is empty)"
+
+    elif monitoring_cores_policy == "auto":
+        if num_monitoring_cores == 0:
+            # Default to a quarter of available cores, with a minimum of 1.
+            num_to_take = max(1, len(available_for_monitoring) // 4)
+        else:
+            num_to_take = num_monitoring_cores
+
+        final_monitor_cores = available_for_monitoring[:num_to_take]
+        core_str = ",".join(map(str, final_monitor_cores))
+        desc = f"Auto-selected {len(final_monitor_cores)} cores: [{core_str}]"
+
+    if not final_monitor_cores:
+        return [], "Shared (no available cores found for monitoring)"
+
+    return final_monitor_cores, desc
 
 
 def prepare_command_with_setup(
