@@ -12,7 +12,7 @@ import os
 import psutil
 import re
 import time
-from typing import List, Iterable, Optional, Set
+from typing import List, Iterable, Optional
 
 from .base import AbstractMemoryCollector, ProcessMemorySample
 

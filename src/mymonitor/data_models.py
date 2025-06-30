@@ -135,7 +135,7 @@ class RunContext:
 
     # --- Run-specific parameters ---
     parallelism_level: int
-    monitoring_interval: int
+    monitoring_interval: float
     collector_type: str
     current_timestamp_str: str
 

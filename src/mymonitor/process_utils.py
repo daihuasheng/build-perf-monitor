@@ -105,6 +105,72 @@ def determine_build_cpu_affinity(
     return build_command_prefix, build_cores_target_str
 
 
+def prepare_command_with_setup(
+    main_command: str, setup_command: Optional[str]
+) -> Tuple[str, Optional[str]]:
+    """
+    Prepares a final command string and determines if a specific shell is needed.
+
+    If a setup command is provided, it's prepended to the main command
+    using '&&', and '/bin/bash' is designated as the required shell to
+    correctly handle the command chaining.
+
+    Args:
+        main_command: The primary command to execute.
+        setup_command: An optional command to run before the main command.
+
+    Returns:
+        A tuple containing:
+        - The final command string to be executed.
+        - The path to the shell executable ('/bin/bash') if needed, otherwise None.
+    """
+    if setup_command:
+        final_command = f"{setup_command} && {main_command}"
+        executable_shell = "/bin/bash"
+    else:
+        final_command = main_command
+        executable_shell = None
+    return final_command, executable_shell
+
+
+def prepare_full_build_command(
+    main_command_template: str,
+    j_level: int,
+    taskset_prefix: str,
+    setup_command: Optional[str],
+) -> Tuple[str, Optional[str]]:
+    """
+    Assembles the final, fully-formed build command string from all its parts.
+
+    This function handles formatting the command template with the parallelism
+    level, prepending the CPU affinity prefix (`taskset`), and chaining an
+    optional setup script.
+
+    Args:
+        main_command_template: The command string with a {j_level} placeholder.
+        j_level: The parallelism level to inject into the template.
+        taskset_prefix: The `taskset -c ...` command prefix, if any.
+        setup_command: An optional setup command to run before the main command.
+
+    Returns:
+        A tuple containing:
+        - The final, executable command string.
+        - The path to the shell executable ('/bin/bash') if needed, otherwise None.
+    """
+    # 1. Format the main command with the parallelism level.
+    formatted_main_cmd = main_command_template.format(j_level=j_level)
+
+    # 2. Prepend the taskset prefix for CPU pinning.
+    command_with_affinity = taskset_prefix + formatted_main_cmd
+
+    # 3. Use the existing helper to prepend the setup script.
+    final_cmd, executable = prepare_command_with_setup(
+        command_with_affinity, setup_command
+    )
+
+    return final_cmd, executable
+
+
 def run_command(
     command: str, cwd: Path, shell: bool = False, executable_shell: Optional[str] = None
 ) -> Tuple[int, str, str]:
@@ -175,124 +241,90 @@ def get_process_category(cmd_name: str, cmd_full: str) -> Tuple[str, str]:
         A tuple containing the determined (major_category, minor_category).
         If no rule matches, it returns ('Other', 'Other_<sanitized_cmd_name>').
     """
+    # config.get_config().rules returns a List[RuleConfig], pre-sorted by priority.
     rules = config.get_config().rules
     orig_cmd_name = cmd_name
     orig_cmd_full = cmd_full
 
     # --- Command Unwrapping Logic ---
-    # This section handles commands wrapped in `sh -c "..."` or `bash -c "..."`.
-    # It extracts the inner command to allow for more accurate classification.
     unwrapped_cmd_name = orig_cmd_name
     unwrapped_cmd_full = orig_cmd_full
     was_sh_bash_c_call = False
 
+    # This regex is intentionally broad to catch `sh -c`, `bash -c`, `/bin/sh -c`, etc.
     sh_bash_c_pattern = r"^(?:.*/)?(sh|bash)\s+-c\s+"
     is_sh_bash_c_match = re.match(sh_bash_c_pattern, orig_cmd_full)
 
     if is_sh_bash_c_match:
         was_sh_bash_c_call = True
-        # Extract the command part after 'sh -c '.
+        # Extract the real command that comes after 'sh -c '
         command_part = orig_cmd_full[is_sh_bash_c_match.end() :]
-        # Remove surrounding quotes if they exist.
+
+        # Remove surrounding quotes if they exist (e.g., sh -c "command...")
         if (command_part.startswith('"') and command_part.endswith('"')) or (
             command_part.startswith("'") and command_part.endswith("'")
         ):
             command_part = command_part[1:-1]
 
-        # Strip leading environment variable assignments (e.g., "VAR=val command...").
-        processed_command_part = re.sub(
-            r"^((?:export\s+)?[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|\"[^\"]*\"|[^\"'\s]+)\s+)*",
-            "",
-            command_part.strip(),
-        )
-
-        if processed_command_part:
-            unwrapped_cmd_full = processed_command_part
-            # Use shlex.split for robust parsing of wrapped commands.
-            # This correctly handles commands with quoted paths that contain spaces.
-            try:
-                unwrapped_cmd_parts = shlex.split(unwrapped_cmd_full)
-                unwrapped_cmd_name = (
-                    unwrapped_cmd_parts[0] if unwrapped_cmd_parts else ""
+        # Heuristically find the actual command by splitting
+        try:
+            # Use shlex for robustness against nested quotes
+            inner_parts = shlex.split(command_part)
+            if inner_parts:
+                unwrapped_cmd_name = inner_parts[0].split("/")[-1]  # Get base name
+                unwrapped_cmd_full = (
+                    command_part  # The full command is the unwrapped part
                 )
-            except ValueError:
-                # Fallback for shlex errors (e.g., unmatched quotes)
-                unwrapped_cmd_name = unwrapped_cmd_full.split()[0]
+        except ValueError:
+            # Fallback for shlex errors
+            parts = command_part.split()
+            if parts:
+                unwrapped_cmd_name = parts[0].split("/")[-1]
+                unwrapped_cmd_full = command_part
 
-    # Use the potentially unwrapped command for classification.
-    current_cmd_name = unwrapped_cmd_name
-    # Handle cases where tools like `ccache` create symlinks ending in `.real`.
-    if current_cmd_name.endswith(".real"):
-        current_cmd_name = current_cmd_name[:-5]
-    current_cmd_full = unwrapped_cmd_full
-
-    logger.debug(
-        f"--- Starting categorization for: name='{cmd_name}', full='{cmd_full}' ---"
-    )
-    logger.debug(
-        f"    Using effective command: name='{current_cmd_name}', full='{current_cmd_full}'"
-    )
-
-    # --- Rule Matching Loop ---
-    # Iterate through rules, which are pre-sorted by priority (descending).
+    # --- Rule Matching Logic ---
+    # The `rules` list is already sorted by priority (descending).
     for rule in rules:
-        major_category_from_rule = rule.major_category
-        minor_category_from_rule = rule.category
-        match_field_key = rule.match_field
-        match_type = rule.match_type
-        pattern_str = rule.pattern
-        patterns_list = rule.patterns
-
-        # Determine which command attribute to use for matching based on the rule.
         target_value = ""
-        if match_field_key == "current_cmd_name":
-            target_value = current_cmd_name
-        elif match_field_key == "current_cmd_full":
-            target_value = current_cmd_full
-        elif match_field_key == "orig_cmd_name":
+        if rule.match_field == "current_cmd_name":
+            target_value = unwrapped_cmd_name
+        elif rule.match_field == "current_cmd_full":
+            target_value = unwrapped_cmd_full
+        elif rule.match_field == "orig_cmd_name":
             target_value = orig_cmd_name
-        elif match_field_key == "orig_cmd_full":
+        elif rule.match_field == "orig_cmd_full":
             target_value = orig_cmd_full
         else:
-            continue  # Skip rule if match_field is invalid.
+            continue
 
-        # Perform the match based on the rule's match_type.
         match_found = False
-        if match_type == "exact" and pattern_str is not None:
-            match_found = target_value == pattern_str
-        elif match_type == "contains" and pattern_str is not None:
-            match_found = pattern_str in target_value
-        elif match_type == "startswith" and pattern_str is not None:
-            match_found = target_value.startswith(pattern_str)
-        elif match_type == "endswith" and pattern_str is not None:
-            match_found = target_value.endswith(pattern_str)
-        elif match_type == "regex" and pattern_str is not None:
-            match_found = bool(re.search(pattern_str, target_value))
-        elif match_type == "in_list" and patterns_list is not None:
-            match_found = target_value in patterns_list
+        if rule.match_type == "exact" and rule.pattern is not None:
+            match_found = target_value == rule.pattern
+        elif rule.match_type == "contains" and rule.pattern is not None:
+            match_found = rule.pattern in target_value
+        elif rule.match_type == "startswith" and rule.pattern is not None:
+            match_found = target_value.startswith(rule.pattern)
+        elif rule.match_type == "endswith" and rule.pattern is not None:
+            match_found = target_value.endswith(rule.pattern)
+        elif rule.match_type == "regex" and rule.pattern is not None:
+            match_found = bool(re.search(rule.pattern, target_value))
+        elif rule.match_type == "in_list" and rule.patterns is not None:
+            match_found = target_value in rule.patterns
 
-        # Special case: If a command was `sh -c "..."`, we don't want to categorize
-        # the `sh` process itself as "ShellInteractiveOrDirect". We only care about
-        # the inner command, which has already been processed.
+        # Special case: Don't match the 'sh'/'bash' process itself if it was just a wrapper.
         if (
-            major_category_from_rule == "Scripting"
-            and minor_category_from_rule == "ShellInteractiveOrDirect"
-            and was_sh_bash_c_call
+            was_sh_bash_c_call
+            and rule.major_category == "Scripting"
+            and rule.category == "Shell"
         ):
             match_found = False
 
         if match_found:
-            logger.debug(
-                f"    SUCCESS: Matched rule '{rule.category}' -> ({major_category_from_rule}, {minor_category_from_rule})"
-            )
-            return major_category_from_rule, minor_category_from_rule
+            return rule.major_category, rule.category
 
-    # --- Fallback Categorization ---
-    # If no rule matched, create a generic 'Other' category.
-    safe_cmd_name_part = re.sub(r"[^a-zA-Z0-9_.-]", "_", current_cmd_name[:30])
-    fallback_category = f"Other_{safe_cmd_name_part}"
-    logger.debug(f"--- No rule matched. Categorizing as Other: {fallback_category} ---")
-    return "Other", fallback_category
+    # --- Fallback Logic ---
+    sanitized_name = re.sub(r"[^a-zA-Z0-9_]", "_", unwrapped_cmd_name)
+    return "Other", f"Other_{sanitized_name}"
 
 
 def check_pidstat_installed() -> bool:
