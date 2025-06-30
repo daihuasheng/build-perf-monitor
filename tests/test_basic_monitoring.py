@@ -95,7 +95,7 @@ def setup_test_config_files(tmp_path: Path) -> Path:
 priority = 100
 major_category = "Scripting"
 category = "ShellScriptFile"
-match_field = "command_name"
+match_field = "current_cmd_name"
 match_type = "in_list"
 patterns = ["fake_build_script.sh"]
 comment = "Rule for the main test script."
@@ -104,7 +104,7 @@ comment = "Rule for the main test script."
 priority = 90
 major_category = "build"
 category = "Sleep"
-match_field = "command_name"
+match_field = "current_cmd_name"
 match_type = "in_list"
 patterns = ["sleep"]
 comment = "Rule for the sleep command used in the test script."
@@ -217,7 +217,8 @@ def test_basic_monitoring_run(setup_test_config_files: Path, monkeypatch, capsys
     assert (run_specific_output_dir / "build_stderr.log").exists()
     assert (run_specific_output_dir / "metadata.log").exists()
     assert (run_specific_output_dir / "clean.log").exists()
-    assert (run_specific_output_dir / "collector_aux.log").exists()
+    # This log is only created by the 'rss_pidstat' collector, not 'pss_psutil' used in this test.
+    # assert (run_specific_output_dir / "collector_aux.log").exists()
 
 
 def test_run_with_no_project_found(monkeypatch, caplog):
