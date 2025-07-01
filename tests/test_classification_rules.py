@@ -31,16 +31,17 @@ def app_config_real_rules(monkeypatch):
     # Create a minimal, mock AppConfig. We only need the 'rules' part to be real.
     mock_app_config = AppConfig(
         monitor=MonitorConfig(  # Dummy data for MonitorConfig
-            interval_seconds=1,
             default_jobs=[],
-            metric_type="",
-            monitor_core=-1,
-            build_cores_policy="",
-            specific_build_cores="",
             skip_plots=True,
             log_root_dir=Path("/tmp"),
             categorization_cache_size=1,
-            pss_collector_mode="",
+            interval_seconds=1.0,
+            metric_type="pss_kb",
+            pss_collector_mode="full_scan",
+            scheduling_policy="adaptive",
+            monitor_core=0,
+            manual_build_cores="",
+            manual_monitoring_cores="",
         ),
         projects=[],  # Projects are not needed for this test
         rules=rules_config,  # Use the real rules

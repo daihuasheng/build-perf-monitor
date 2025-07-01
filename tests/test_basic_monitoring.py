@@ -67,9 +67,10 @@ def setup_test_config_files(tmp_path: Path) -> Path:
                 "pss_collector_mode": "full_scan",
             },
             "scheduling": {
-                "monitor_core": -1,
-                "build_cores_policy": "none",
-                "specific_build_cores": "",
+                "scheduling_policy": "adaptive",
+                "monitor_core": 0,
+                "manual_build_cores": "",
+                "manual_monitoring_cores": "",
             },
         },
     }
@@ -199,7 +200,7 @@ def test_basic_monitoring_run(setup_test_config_files: Path, monkeypatch, capsys
         "PSS_KB",
     }
     assert expected_cols.issubset(df.columns), f"Expected columns are not a subset of Parquet columns: {df.columns}"
-    assert "Sleep" in df["minor_category"].unique()
+    assert "Generic_Path" in df["minor_category"].unique()
 
     # 2. Verify the summary log file.
     summary_log_file = run_specific_output_dir / "summary.log"
@@ -208,8 +209,8 @@ def test_basic_monitoring_run(setup_test_config_files: Path, monkeypatch, capsys
     summary_content = summary_log_file.read_text()
     assert "build_exit_code=0" in summary_content
     assert "peak_overall_memory_kb=" in summary_content
-    assert "build:Sleep:" in summary_content, (
-        "Expected 'build:Sleep' category in summary log."
+    assert "OSUtilities:Generic_Path:" in summary_content, (
+        "Expected 'OSUtilities:Generic_Path' category in summary log."
     )
 
     # 3. Verify auxiliary logs

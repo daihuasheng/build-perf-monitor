@@ -44,11 +44,94 @@ current_runner: Optional["BuildRunner"] = None
 # This wrapper is necessary for multiprocessing.Pool to work correctly,
 # as it needs a top-level function to pickle and send to worker processes.
 def _monitoring_worker_entry(
-    runner_instance: "BuildRunner", core_id: Optional[int]
+    core_id: Optional[int], 
+    input_queue: Any, 
+    output_queue: Any, 
+    primary_metric_field: str
 ) -> Dict:
     """Entry point for a monitoring worker process."""
-    # This is where the actual work is done, within the BuildRunner instance.
-    return runner_instance._monitoring_worker(core_id)
+    # Pin the worker to a specific CPU core if specified
+    if core_id is not None:
+        try:
+            import psutil
+            p = psutil.Process()
+            p.cpu_affinity([core_id])
+            logger.info(
+                f"Monitoring worker (PID:{p.pid}) pinned to core {core_id}."
+            )
+        except Exception as e:
+            logger.error(f"Failed to pin worker to core {core_id}: {e}")
+
+    if not input_queue or not output_queue:
+        logger.error("Worker: Input or output queue not available")
+        return {}
+
+    logger.info(f"Monitoring worker started (core: {core_id})")
+    processed_groups = 0
+    
+    # The loop will run until it receives a sentinel value (None)
+    while True:
+        try:
+            queue_item = input_queue.get(timeout=1.0)  # Add timeout to avoid hanging
+        except:
+            logger.debug("Worker: Queue get timeout, checking for sentinel")
+            continue
+            
+        if queue_item is None:  # Sentinel value received
+            logger.info(f"Worker: Received sentinel, processed {processed_groups} groups")
+            input_queue.put(None)  # Propagate sentinel for other workers
+            break
+
+        sample_group, timestamp = queue_item
+        processed_groups += 1
+        logger.debug(f"Worker: Processing group {processed_groups} with {len(sample_group)} samples")
+
+        # Local aggregation for this worker
+        local_results = {
+            "all_samples_data": [],
+            "category_pid_set": {},
+            "category_peak_sum": {},
+            "group_total_memory": 0.0,
+            "timestamp": timestamp,
+        }
+        group_total_memory = 0.0
+
+        for sample in sample_group:
+            major_cat, minor_cat = process_utils.get_process_category(
+                sample.command_name, sample.full_command
+            )
+
+            mem_kb = float(sample.metrics.get(primary_metric_field, 0.0))
+            group_total_memory += mem_kb
+
+            row_data = {
+                "timestamp": timestamp,  # Carry over the timestamp
+                "major_category": major_cat,
+                "minor_category": minor_cat,
+                "pid": sample.pid,
+                "command_name": sample.command_name,
+            }
+            row_data.update(sample.metrics)
+            local_results["all_samples_data"].append(row_data)
+
+            cat_key = f"{major_cat}:{minor_cat}"
+
+            current_sum = local_results["category_peak_sum"].get(cat_key, 0.0)
+            local_results["category_peak_sum"][cat_key] = current_sum + mem_kb
+
+            if cat_key not in local_results["category_pid_set"]:
+                local_results["category_pid_set"][cat_key] = set()
+            local_results["category_pid_set"][cat_key].add(sample.pid)
+
+        # Store the total for this snapshot
+        local_results["group_total_memory"] = group_total_memory
+
+        # Put the processed chunk of data onto the output queue
+        output_queue.put(local_results)
+        logger.debug(f"Worker: Put processed group {processed_groups} into output queue (total memory: {group_total_memory} KB)")
+
+    logger.info(f"Monitoring worker finished, processed {processed_groups} groups")
+    return {}
 
 
 def cleanup_processes(*args: Any) -> None:
@@ -102,8 +185,12 @@ class BuildRunner:
         self.shutdown_requested = threading.Event()
         self.build_command_prefix: str = ""
 
+        # --- New: Store prepared command and executable ---
+        self.final_build_command: Optional[str] = None
+        self.executable_shell: Optional[str] = None
+
         # --- New state for multi-process monitoring ---
-        self.monitoring_workers_pool: Optional[multiprocessing.pool.Pool] = None
+        self.monitoring_worker_processes: List[multiprocessing.Process] = []
         self.producer_thread: Optional[threading.Thread] = None
         self.input_queue: Optional[Any] = None
         self.output_queue: Optional[Any] = None
@@ -149,6 +236,14 @@ class BuildRunner:
             f"CPU allocation for monitoring workers: {cpu_plan.monitoring_cores_desc}"
         )
 
+        # --- Prepare the final build command once ---
+        self.final_build_command, self.executable_shell = process_utils.prepare_full_build_command(
+            main_command_template=self.project_config.build_command_template,
+            j_level=self.parallelism_level,
+            taskset_prefix=self.build_command_prefix,
+            setup_command=self.project_config.setup_command_template,
+        )
+
         monitor_script_pinned_to_core_info = f"Core {self.monitor_core_id}"
 
         self.run_context = self._create_run_context(
@@ -180,9 +275,20 @@ class BuildRunner:
             if self.producer_thread.is_alive():
                 logger.warning("Producer thread did not terminate gracefully.")
 
-        if self.monitoring_workers_pool:
-            self.monitoring_workers_pool.close()
-            self.monitoring_workers_pool.join()
+        # Terminate monitoring worker processes
+        if self.monitoring_worker_processes:
+            logger.info("Terminating monitoring worker processes...")
+            for process in self.monitoring_worker_processes:
+                if process.is_alive():
+                    process.terminate()
+            
+            # Wait for processes to terminate
+            for process in self.monitoring_worker_processes:
+                process.join(timeout=5)
+                if process.is_alive():
+                    logger.warning(f"Worker process {process.pid} did not terminate gracefully, killing it.")
+                    process.kill()
+                    process.join()
 
         if self.build_process:
             self._terminate_process_tree(self.build_process.pid, "build process")
@@ -194,15 +300,8 @@ class BuildRunner:
         self, build_cores_target_str: str, monitor_script_pinned_to_core_info: str
     ) -> RunContext:
         """Creates the RunContext for this monitoring task."""
-        build_command_template = self.project_config.build_command_template
-        setup_command = self.project_config.setup_command_template
-
-        actual_build_command, _ = process_utils.prepare_full_build_command(
-            main_command_template=build_command_template,
-            j_level=self.parallelism_level,
-            taskset_prefix=self.build_command_prefix,
-            setup_command=setup_command,
-        )
+        if not self.final_build_command:
+            raise ValueError("Final build command not prepared. Call setup() first.")
 
         run_paths = self._generate_run_paths(
             self.log_dir,
@@ -216,7 +315,7 @@ class BuildRunner:
             project_name=self.project_config.name,
             project_dir=self.project_config.dir,
             process_pattern=self.project_config.process_pattern,
-            actual_build_command=actual_build_command,
+            actual_build_command=self.final_build_command,
             parallelism_level=self.parallelism_level,
             monitoring_interval=self.monitoring_interval,
             collector_type=self.collector_type,
@@ -299,23 +398,19 @@ class BuildRunner:
         """Starts the build process and the monitoring thread."""
         if not self.run_context or not self.collector:
             raise ValueError("RunContext or Collector not initialized.")
+        
+        if not self.final_build_command:
+            raise ValueError("Final build command not prepared.")
 
         logger.info("--- Kicking off build process and monitoring thread ---")
 
-        cmd_to_run, executable = process_utils.prepare_full_build_command(
-            main_command_template=self.project_config.build_command_template,
-            j_level=self.parallelism_level,
-            taskset_prefix=self.build_command_prefix,
-            setup_command=self.project_config.setup_command_template,
-        )
-
         self.build_process = subprocess.Popen(
-            cmd_to_run,
+            self.final_build_command,
             cwd=self.run_context.project_dir,
             stdout=self.log_files["build_stdout"],
             stderr=self.log_files["build_stderr"],
             shell=True,
-            executable=executable,  # This correctly passes /bin/bash if needed
+            executable=self.executable_shell,  # This correctly passes /bin/bash if needed
         )
         logger.info(
             f"Build process started with PID: {self.build_process.pid} in directory {self.run_context.project_dir}"
@@ -323,6 +418,8 @@ class BuildRunner:
 
         # Set the build PID for the collector and start it
         self.collector.build_process_pid = self.build_process.pid
+        # Also update the RunContext with the build process PID
+        self.run_context.build_process_pid = self.build_process.pid
         self.collector.start()
 
         # --- Start Producer-Consumer Framework ---
@@ -337,13 +434,26 @@ class BuildRunner:
 
         logger.info(f"Starting {self.num_workers} monitoring worker process(es).")
 
-        # Create and start the pool of monitoring worker processes.
-        # The 'partial' function is used to pass the 'self' instance to the top-level worker entry function.
+        # Create and start the monitoring worker processes manually
+        # We don't use Pool.map_async because we need long-running processes
         from functools import partial
+        import multiprocessing
 
-        worker_func = partial(_monitoring_worker_entry, self)
-        self.monitoring_workers_pool = multiprocessing.Pool(processes=self.num_workers)
-        self.monitoring_workers_pool.map_async(worker_func, worker_cores)
+        primary_metric_field = self.collector.get_primary_metric_field()
+        self.monitoring_worker_processes = []
+        
+        for i, core_id in enumerate(worker_cores):
+            worker_func = partial(
+                _monitoring_worker_entry, 
+                core_id, 
+                self.input_queue, 
+                self.output_queue, 
+                primary_metric_field
+            )
+            process = multiprocessing.Process(target=worker_func)
+            process.start()
+            self.monitoring_worker_processes.append(process)
+            logger.debug(f"Started monitoring worker process {i+1} (PID: {process.pid}, core: {core_id})")
 
         # The data collection and queuing logic is now in the producer loop,
         # running in a separate thread.
@@ -390,13 +500,17 @@ class BuildRunner:
         if self.producer_thread:
             self.producer_thread.join()
 
-        if self.monitoring_workers_pool:
+        # Signal monitoring workers to terminate and wait for them
+        if self.monitoring_worker_processes:
             logger.info("All data queued. Signaling monitoring workers to terminate.")
             for _ in range(self.num_workers):
                 self.input_queue.put(None)
 
-            self.monitoring_workers_pool.close()
-            self.monitoring_workers_pool.join()
+            # Wait for all worker processes to finish
+            for process in self.monitoring_worker_processes:
+                process.join(timeout=10)
+                if process.is_alive():
+                    logger.warning(f"Worker process {process.pid} did not finish gracefully.")
             logger.info("All monitoring workers have terminated.")
 
         all_samples_data = []
@@ -404,8 +518,17 @@ class BuildRunner:
         final_category_peak_sum: Dict[str, float] = {}
         group_memory_snapshots = []
 
+        # Check output queue
+        output_items_count = 0
+        logger.info("Starting to process output queue...")
         while not self.output_queue.empty():
             worker_result = self.output_queue.get()
+            output_items_count += 1
+            logger.debug(f"Processing output item {output_items_count}")
+            
+            samples_in_result = len(worker_result.get("all_samples_data", []))
+            logger.debug(f"Output item {output_items_count} contains {samples_in_result} samples")
+            
             all_samples_data.extend(worker_result.get("all_samples_data", []))
 
             # Aggregate category data from the worker
@@ -427,6 +550,9 @@ class BuildRunner:
                         "timestamp": worker_result["timestamp"],
                     }
                 )
+
+        logger.info(f"Processed {output_items_count} output items from workers")
+        logger.info(f"Total samples collected: {len(all_samples_data)}")
 
         # Post-process aggregated data
         peak_overall_memory_kb = 0
@@ -502,92 +628,19 @@ class BuildRunner:
             return
 
         logger.info("Producer loop started. Reading samples from collector.")
+        sample_count = 0
         for sample_group in self.collector.read_samples():
+            sample_count += 1
+            logger.debug(f"Producer: Received sample group {sample_count} with {len(sample_group)} samples")
             # Add a timestamp to the group for later aggregation
             timestamp = pd.Timestamp.now()
             # Pass data as a tuple to avoid modifying the original sample object
             self.input_queue.put((sample_group, timestamp))
+            logger.debug(f"Producer: Put sample group {sample_count} into input queue")
 
-        logger.info("Producer loop finished. All samples have been queued.")
+        logger.info(f"Producer loop finished. Processed {sample_count} sample groups. All samples have been queued.")
 
-    def _monitoring_worker(self, core_id: Optional[int]) -> Dict:
-        """
-        The main logic for a single monitoring worker process.
-        It pulls data from the input queue, processes it, and puts results
-        onto the output queue.
-        """
-        # Pin the worker to a specific CPU core if specified
-        if core_id is not None:
-            try:
-                p = psutil.Process()
-                p.cpu_affinity([core_id])
-                logger.info(
-                    f"Monitoring worker (PID:{p.pid}) pinned to core {core_id}."
-                )
-            except Exception as e:
-                logger.error(f"Failed to pin worker to core {core_id}: {e}")
 
-        if not self.input_queue or not self.output_queue:
-            return {}
-
-        # The loop will run until it receives a sentinel value (None)
-        while True:
-            queue_item = self.input_queue.get()
-            if queue_item is None:  # Sentinel value received
-                self.input_queue.put(None)  # Propagate sentinel for other workers
-                break
-
-            sample_group, timestamp = queue_item
-
-            # Local aggregation for this worker
-            local_results = {
-                "all_samples_data": [],
-                "category_pid_set": {},
-                "category_peak_sum": {},
-                "group_total_memory": 0.0,
-                "timestamp": timestamp,
-            }
-            primary_metric = (
-                self.collector.get_primary_metric_field()
-                if self.collector
-                else "memory_kb"
-            )
-            group_total_memory = 0.0
-
-            for sample in sample_group:
-                major_cat, minor_cat = process_utils.get_process_category(
-                    sample.command_name, sample.full_command
-                )
-
-                mem_kb = float(sample.metrics.get(primary_metric, 0.0))
-                group_total_memory += mem_kb
-
-                row_data = {
-                    "timestamp": timestamp,  # Carry over the timestamp
-                    "major_category": major_cat,
-                    "minor_category": minor_cat,
-                    "pid": sample.pid,
-                    "command_name": sample.command_name,
-                }
-                row_data.update(sample.metrics)
-                local_results["all_samples_data"].append(row_data)
-
-                cat_key = f"{major_cat}:{minor_cat}"
-
-                current_sum = local_results["category_peak_sum"].get(cat_key, 0.0)
-                local_results["category_peak_sum"][cat_key] = current_sum + mem_kb
-
-                if cat_key not in local_results["category_pid_set"]:
-                    local_results["category_pid_set"][cat_key] = set()
-                local_results["category_pid_set"][cat_key].add(sample.pid)
-
-            # Store the total for this snapshot
-            local_results["group_total_memory"] = group_total_memory
-
-            # Put the processed chunk of data onto the output queue
-            self.output_queue.put(local_results)
-
-        return {}
 
     @staticmethod
     def _generate_run_paths(

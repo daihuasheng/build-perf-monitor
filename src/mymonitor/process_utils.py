@@ -9,7 +9,6 @@ This module provides helpers for:
 - Checking for the presence of system dependencies like 'pidstat'.
 """
 
-import functools
 import logging
 import math
 import re
@@ -17,7 +16,7 @@ import shlex
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional, Set, Tuple
+from typing import Optional, Set, Tuple, Dict
 
 import psutil
 
@@ -26,6 +25,90 @@ from . import config
 from .data_models import CpuAllocationPlan
 
 logger = logging.getLogger(__name__)
+
+# Cache for process categorization to avoid repeated rule evaluation
+_categorization_cache: Dict[Tuple[str, str], Tuple[str, str]] = {}
+
+
+def parse_shell_wrapper_command(cmd_name: str, cmd_full: str) -> Tuple[str, str]:
+    """
+    解析shell包装命令，提取实际执行的命令。
+    
+    这个函数识别常见的shell包装模式（如 sh -c, bash -c等），
+    并提取其中实际执行的命令，但排除用shell启动脚本的情况。
+    
+    Args:
+        cmd_name: 进程的命令名称 (如 'sh', 'bash')
+        cmd_full: 完整的命令行字符串
+        
+    Returns:
+        Tuple[str, str]: (解析后的命令名称, 解析后的完整命令)
+        如果不是shell包装或解析失败，返回原始的(cmd_name, cmd_full)
+    """
+    
+    # 只处理常见的shell命令
+    if cmd_name not in ['sh', 'bash', 'zsh', 'dash']:
+        return cmd_name, cmd_full
+    
+    # 检查是否是 shell -c 模式
+    if ' -c ' not in cmd_full:
+        return cmd_name, cmd_full
+    
+    try:
+        # 使用shlex安全解析命令行
+        parts = shlex.split(cmd_full)
+        
+        # 寻找 -c 参数的位置
+        c_index = -1
+        for i, part in enumerate(parts):
+            if part == '-c' and i + 1 < len(parts):
+                c_index = i
+                break
+        
+        if c_index == -1:
+            return cmd_name, cmd_full
+            
+        # 获取 -c 后面的命令字符串
+        wrapped_command = parts[c_index + 1]
+        
+        # 再次解析被包装的命令
+        try:
+            wrapped_parts = shlex.split(wrapped_command)
+        except ValueError:
+            # 如果解析失败，可能是复杂的shell语法，保持原样
+            return cmd_name, cmd_full
+            
+        if not wrapped_parts:
+            return cmd_name, cmd_full
+            
+        # 获取被包装命令的基本名称
+        wrapped_cmd_name = Path(wrapped_parts[0]).name
+        
+        # 检查是否是脚本文件 - 如果是，保持原始的shell分类
+        if (wrapped_cmd_name.endswith('.sh') or 
+            wrapped_cmd_name.endswith('.py') or 
+            wrapped_cmd_name.endswith('.pl') or
+            wrapped_cmd_name.endswith('.rb') or
+            wrapped_cmd_name.endswith('.js') or
+            wrapped_parts[0].endswith('.sh') or
+            wrapped_parts[0].endswith('.py') or
+            wrapped_parts[0].endswith('.pl') or
+            wrapped_parts[0].endswith('.rb') or
+            wrapped_parts[0].endswith('.js')):
+            return cmd_name, cmd_full
+            
+        # 检查是否是明显的脚本内容（包含shell语法）
+        if any(syntax in wrapped_command for syntax in ['&&', '||', '|', ';', '$(', '`']):
+            # 如果包含shell语法，保持原始shell分类，因为这是脚本逻辑
+            return cmd_name, cmd_full
+                
+        # 如果被包装的命令看起来是一个简单的程序调用，返回解析后的结果
+        logger.debug(f"Shell wrapper detected: '{cmd_full}' -> unwrapped: '{wrapped_cmd_name}', '{wrapped_command}'")
+        return wrapped_cmd_name, wrapped_command
+        
+    except (ValueError, IndexError) as e:
+        logger.debug(f"Failed to parse shell wrapper command '{cmd_full}': {e}")
+        return cmd_name, cmd_full
 
 
 def _parse_core_range_str(core_str: str) -> Set[int]:
@@ -301,12 +384,11 @@ def run_command(
         return -1, "", f"An unexpected error occurred: {e}"
 
 
-@functools.lru_cache(maxsize=config.get_config().monitor.categorization_cache_size)
 def get_process_category(cmd_name: str, cmd_full: str) -> Tuple[str, str]:
     """
     Categorizes a process based on a set of rules.
 
-    This function uses an LRU cache to avoid re-evaluating the same process
+    This function uses an internal cache to avoid re-evaluating the same process
     command line repeatedly, which can significantly speed up monitoring on
     builds that spawn many identical processes.
 
@@ -320,9 +402,15 @@ def get_process_category(cmd_name: str, cmd_full: str) -> Tuple[str, str]:
         A tuple of (major_category, minor_category).
         Defaults to ('Unknown', 'Unknown') if no rules match.
     """
+    # Check cache first
+    cache_key = (cmd_name, cmd_full)
+    if cache_key in _categorization_cache:
+        return _categorization_cache[cache_key]
+    
     app_config = config.get_config()
-    current_cmd_name = cmd_name
-    current_cmd_full = cmd_full
+    
+    # 尝试解析shell包装命令
+    current_cmd_name, current_cmd_full = parse_shell_wrapper_command(cmd_name, cmd_full)
 
     for rule in app_config.rules:
         target_field_value = (
@@ -345,11 +433,23 @@ def get_process_category(cmd_name: str, cmd_full: str) -> Tuple[str, str]:
         elif rule.match_type == "starts_with":
             if rule.pattern and target_field_value.startswith(rule.pattern):
                 match = True
+        elif rule.match_type == "endswith":
+            if rule.pattern and target_field_value.endswith(rule.pattern):
+                match = True
 
         if match:
-            return rule.major_category, rule.category
+            result = (rule.major_category, rule.category)
+            # Cache the result, but respect the cache size limit
+            if len(_categorization_cache) < app_config.monitor.categorization_cache_size:
+                _categorization_cache[cache_key] = result
+            return result
 
-    return "Unknown", "Unknown"
+    # 如果没有规则匹配，生成基于原始命令名称的分类
+    result = ("Other", f"Other_{current_cmd_name}")
+    # Cache the result, but respect the cache size limit
+    if len(_categorization_cache) < app_config.monitor.categorization_cache_size:
+        _categorization_cache[cache_key] = result
+    return result
 
 
 def check_pidstat_installed() -> bool:

@@ -156,11 +156,16 @@ class PssPsutilCollector(AbstractMemoryCollector):
                     return None  # Cannot check, safer to skip.
 
             # Regex pattern match
-            if not (
+            pattern_matches = (
                 self.compiled_pattern.search(proc_name)
                 or (cmdline_str and self.compiled_pattern.search(cmdline_str))
-            ):
+            )
+            
+            if not pattern_matches:
                 return None  # Does not match project's process pattern, skip.
+            
+            # Log when we find a matching process
+            logger.debug(f"Found matching process: PID={proc_info['pid']}, name={proc_name}, cmdline={cmdline_str[:100]}...")
 
             # If all checks pass, get memory info and create the sample.
             mem_full_info = proc.memory_full_info()
@@ -202,20 +207,26 @@ class PssPsutilCollector(AbstractMemoryCollector):
             return
 
         logger.info("PssPsutilCollector sample reading loop started.")
+        iteration_count = 0
         # The main loop continues as long as the collector is active.
         # The stop() method will set _stop_event to True, causing a graceful exit.
         while True:
             interval_start_time = time.monotonic()
             current_interval_samples: List[ProcessMemorySample] = []
+            iteration_count += 1
+            
+            logger.debug(f"Starting sampling iteration {iteration_count}")
 
             # --- OPTIMIZATION: Execute logic based on the configured mode ---
             if self.mode == "descendants_only" and self.build_process_pid:
                 # --- FAST PATH: Only scan descendants of the main build process ---
+                logger.debug(f"Using descendants_only mode for PID {self.build_process_pid}")
                 try:
                     parent_proc = psutil.Process(self.build_process_pid)
-                    for p in itertools.chain(
-                        [parent_proc], parent_proc.children(recursive=True)
-                    ):
+                    descendants = list(parent_proc.children(recursive=True))
+                    logger.debug(f"Found {len(descendants)} descendants of build process")
+                    
+                    for p in itertools.chain([parent_proc], descendants):
                         sample = self._get_sample_for_process(p)
                         if sample:
                             current_interval_samples.append(sample)
@@ -234,12 +245,27 @@ class PssPsutilCollector(AbstractMemoryCollector):
                         "descendants_only mode is active, but no build PID is set. Performing full scan."
                     )
 
+                processes_scanned = 0
                 for proc in psutil.process_iter(self._iter_attrs):
                     if self._stop_event:
                         break
+                    processes_scanned += 1
                     sample = self._get_sample_for_process(proc)
                     if sample:
                         current_interval_samples.append(sample)
+                
+                logger.debug(f"Scanned {processes_scanned} processes in full scan mode")
+
+            logger.debug(f"Iteration {iteration_count}: Found {len(current_interval_samples)} matching samples")
+            
+            # Log some sample details for debugging
+            if current_interval_samples:
+                total_memory = sum(sample.metrics.get("PSS_KB", 0) for sample in current_interval_samples)
+                logger.debug(f"Total PSS memory in this sample: {total_memory} KB")
+                
+                # Log first few samples for debugging
+                for i, sample in enumerate(current_interval_samples[:3]):
+                    logger.debug(f"Sample {i+1}: PID={sample.pid}, cmd={sample.command_name}, PSS={sample.metrics.get('PSS_KB', 0)} KB")
 
             # *** FIX APPLIED HERE ***
             # Always yield the collected samples for this interval BEFORE checking
@@ -249,6 +275,7 @@ class PssPsutilCollector(AbstractMemoryCollector):
 
             # Now, check if we should exit the main loop AFTER yielding data.
             if self._stop_event:
+                logger.info(f"Stop event received, exiting after {iteration_count} iterations")
                 break
 
             # --- Sleep Logic ---
@@ -270,4 +297,4 @@ class PssPsutilCollector(AbstractMemoryCollector):
                     f"longer than interval of {self.monitoring_interval}s."
                 )
 
-        logger.info("PssPsutilCollector sample reading loop has finished.")
+        logger.info(f"PssPsutilCollector sample reading loop has finished after {iteration_count} iterations.")

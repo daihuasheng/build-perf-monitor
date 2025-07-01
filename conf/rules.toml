@@ -497,3 +497,7 @@ match_field = "current_cmd_name"
 match_type = "in_list"
 patterns = ["test"]
 comment = "Catch-all for the 'test' command."
+
+# Note: No catch-all rule needed here. 
+# If no rules match, the code automatically categorizes as ("Other", "Other_{cmd_name}")
+# This provides more specific categorization than a generic "Other_Unmatched".

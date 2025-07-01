@@ -2,7 +2,7 @@ import pytest
 from pathlib import Path
 
 from mymonitor.data_models import AppConfig, RuleConfig, MonitorConfig
-from mymonitor.process_utils import get_process_category, determine_build_cpu_affinity
+from mymonitor.process_utils import get_process_category, plan_cpu_allocation
 
 # --- Fixture for Mocking Configuration ---
 
@@ -52,25 +52,48 @@ def mock_rules_config(monkeypatch):
         RuleConfig(
             major_category="Scripting",
             category="ShellScriptFile",
+            priority=62,
+            match_field="current_cmd_full",
+            match_type="regex",
+            pattern=r"\.sh(\s|$|')",
+        ),
+        RuleConfig(
+            major_category="Scripting",
+            category="ShellInteractiveOrDirect",
+            priority=61,
+            match_field="current_cmd_name",
+            match_type="in_list",
+            patterns=["bash", "sh", "zsh"],
+        ),
+        RuleConfig(
+            major_category="Scripting",
+            category="ShellScriptFile",
             priority=45,
             match_field="current_cmd_name",
             match_type="endswith",
             pattern=".sh",
         ),
+
     ]
     test_rules.sort(key=lambda r: r.priority, reverse=True)
 
     # Create a mock AppConfig object. Monitor and Projects can be empty for this test.
     mock_app_config = AppConfig(
         monitor=MonitorConfig(
-            interval_seconds=1,
+            # [monitor.general]
             default_jobs=[],
-            metric_type="",
-            monitor_core=-1,
-            build_cores_policy="",
-            specific_build_cores="",
             skip_plots=True,
             log_root_dir=Path("/tmp"),
+            categorization_cache_size=1000,
+            # [monitor.collection]
+            interval_seconds=1.0,
+            metric_type="pss_psutil",
+            pss_collector_mode="full_scan",
+            # [monitor.scheduling]
+            scheduling_policy="adaptive",
+            monitor_core=0,
+            manual_build_cores="",
+            manual_monitoring_cores="",
         ),
         projects=[],
         rules=test_rules,
@@ -141,64 +164,54 @@ def test_get_process_category(
     assert minor_cat == expected_minor
 
 
-# --- Tests for determine_build_cpu_affinity (No changes needed here) ---
+# --- Tests for plan_cpu_allocation (Updated from determine_build_cpu_affinity) ---
 
 
-def test_determine_cpu_affinity_all_others_policy():
+def test_plan_cpu_allocation_adaptive_policy():
     """
-    Tests the 'all_others' policy for CPU affinity.
+    Tests the 'adaptive' policy for CPU allocation.
     """
-    prefix, desc = determine_build_cpu_affinity(
-        build_cpu_cores_policy="all_others",
-        specific_build_cores_str=None,
-        monitor_core_id=0,
-        taskset_available=True,
-        total_cores_available=8,
+    plan = plan_cpu_allocation(
+        policy="adaptive",
+        j_level=4,
+        manual_build_cores_str="",
+        manual_monitor_cores_str="",
+        main_monitor_core=0,
     )
-    assert prefix == "taskset -c 1-7 "
-    assert "All Other Cores (cores: 1-7)" in desc
+    # The exact cores will depend on the system, but we can check basic structure
+    assert plan.build_command_prefix.startswith("taskset -c") or plan.build_command_prefix == ""
+    assert "Adaptive" in plan.build_cores_desc
+    assert "Adaptive" in plan.monitoring_cores_desc or "Shared" in plan.monitoring_cores_desc
 
 
-def test_determine_cpu_affinity_specific_policy():
+def test_plan_cpu_allocation_manual_policy():
     """
-    Tests the 'specific' policy for CPU affinity.
+    Tests the 'manual' policy for CPU allocation.
     """
-    prefix, desc = determine_build_cpu_affinity(
-        build_cpu_cores_policy="specific",
-        specific_build_cores_str="2,4-6",
-        monitor_core_id=0,
-        taskset_available=True,
-        total_cores_available=8,
+    plan = plan_cpu_allocation(
+        policy="manual",
+        j_level=4,
+        manual_build_cores_str="2,4-6",
+        manual_monitor_cores_str="7",
+        main_monitor_core=0,
     )
-    assert prefix == "taskset -c 2,4-6 "
-    assert "Specific (cores: 2,4-6)" in desc
+    assert plan.build_command_prefix == "taskset -c 2,4-6 "
+    assert "Manual: cores 2,4-6" in plan.build_cores_desc
+    assert plan.monitoring_cores == [7]
+    assert "Manual: cores 7" in plan.monitoring_cores_desc
 
 
-def test_determine_cpu_affinity_none_policy():
+def test_plan_cpu_allocation_unknown_policy():
     """
-    Tests the 'none' policy for CPU affinity.
+    Tests behavior with an unknown policy.
     """
-    prefix, desc = determine_build_cpu_affinity(
-        build_cpu_cores_policy="none",
-        specific_build_cores_str=None,
-        monitor_core_id=0,
-        taskset_available=True,
-        total_cores_available=8,
+    plan = plan_cpu_allocation(
+        policy="unknown_policy",
+        j_level=4,
+        manual_build_cores_str="",
+        manual_monitor_cores_str="",
+        main_monitor_core=0,
     )
-    assert prefix == ""
-    assert "All Available" in desc
-
-
-def test_determine_cpu_affinity_taskset_unavailable():
-    """
-    Tests behavior when taskset command is not available.
-    """
-    prefix, desc = determine_build_cpu_affinity(
-        build_cpu_cores_policy="all_others",
-        specific_build_cores_str=None,
-        monitor_core_id=0,
-        taskset_available=False,
-        total_cores_available=8,
-    )
-    assert prefix == ""
-    assert "All Available (taskset not available)" in desc
+    assert plan.build_command_prefix == ""
+    assert "unknown policy" in plan.build_cores_desc
+    assert "unknown policy" in plan.monitoring_cores_desc
