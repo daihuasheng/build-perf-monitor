@@ -30,32 +30,26 @@ metric_type = "pss_psutil"
 pss_collector_mode = "full_scan"
 
 [monitor.scheduling]
+# Defines the overall CPU scheduling strategy.
+# - "adaptive": (Recommended) Automatically allocates CPU cores for build and
+#               monitoring tasks based on the build's parallelism (-j value)
+#               and total available system cores. It prioritizes isolating
+#               the build process and uses remaining cores for monitoring.
+# - "manual":   Allows for precise, manual control over core allocation using
+#               the 'manual_*' settings below. Use this for fine-tuning or
+#               on complex, non-standard system architectures.
+scheduling_policy = "adaptive"
+
 # The CPU core to pin the main monitor script and collectors to.
-# Use -1 to disable pinning.
+# Used by both 'adaptive' and 'manual' policies.
 monitor_core = 0
-# The policy for assigning CPU cores to the build process.
-# - "all_others": (Default) Use all cores *not* used by the monitor.
-# - "specific": Use the cores defined in 'specific_build_cores'.
-# - "none": Do not apply any CPU affinity to the build process.
-build_cores_policy = "all_others"
-# A string defining specific cores for the build (e.g., '1,2,4-7')
-# This is only used if the policy is 'specific'.
-specific_build_cores = ""
 
-# --- NEW: Configuration for Monitoring Worker Processes ---
-# Policy for assigning CPU cores to the monitoring worker processes.
-# 'auto'   -> Automatically selects a number of cores from those *not* used by the build process, ensuring isolation.
-# 'specific' -> Use the exact cores defined in 'specific_monitoring_cores'.
-# 'shared' -> Do not pin monitoring workers; they will share cores with the build process.
-monitoring_cores_policy = "auto"
+# --- Settings for 'manual' scheduling_policy ---
+# A string defining specific cores for the build (e.g., '1,2,4-7').
+manual_build_cores = ""
 
-# Number of cores to use for monitoring workers when policy is 'auto'.
-# A value of 0 means it will default to max(1, num_total_cores / 4).
-num_monitoring_cores = 0
-
-# Specify the exact cores for monitoring workers, e.g., "12-15".
-# Only used if monitoring_cores_policy is 'specific'.
-specific_monitoring_cores = ""
+# A string defining specific cores for monitoring workers (e.g., '8-15').
+manual_monitoring_cores = ""
 
 
 # ===================================================================

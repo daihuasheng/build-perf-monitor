@@ -8,6 +8,7 @@ the application, such as configuration loading, runtime monitoring, and
 data reporting.
 """
 
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -22,33 +23,22 @@ class MonitorConfig:
     Configuration for the monitor's global behavior, loaded from `config.toml`.
     """
 
-    # The time in seconds between each memory sample. Can be a float.
-    interval_seconds: int
-    # A list of parallelism levels (-j values) to use when no specific level is provided via CLI.
+    # [monitor.general]
     default_jobs: List[int]
-    # The type of memory collector to use (e.g., 'pss_psutil', 'rss_pidstat').
-    metric_type: str
-    # The CPU core to pin the main monitor script to (-1 to disable).
-    monitor_core: int
-    # The policy for assigning CPU cores to the build process (e.g., 'all_others', 'specific', 'none').
-    build_cores_policy: str
-    # A string defining specific cores for the build process (e.g., '1,2,4-7') if policy is 'specific'.
-    specific_build_cores: str
-    # --- New fields for multi-process monitoring ---
-    # The policy for assigning CPU cores to the monitoring worker processes.
-    monitoring_cores_policy: str
-    # The number of cores to use for monitoring when policy is 'auto'.
-    num_monitoring_cores: int
-    # A string defining specific cores for monitoring (e.g., '8-11') if policy is 'specific'.
-    specific_monitoring_cores: str
-    # If True, plot generation will be skipped after the monitoring run.
     skip_plots: bool
-    # The root directory where all run logs and plots will be saved.
     log_root_dir: Path
-    # Categorization cache size
-    categorization_cache_size: int = 4096
-    # Collector optimization mode, could be 'full_scan' or 'descendants_only'
-    pss_collector_mode: str = "full_scan"
+    categorization_cache_size: int
+
+    # [monitor.collection]
+    interval_seconds: float
+    metric_type: str
+    pss_collector_mode: str
+
+    # [monitor.scheduling] - Unified Policy
+    scheduling_policy: str
+    monitor_core: int
+    manual_build_cores: str
+    manual_monitoring_cores: str
 
 
 @dataclass
@@ -176,3 +166,12 @@ class MonitoringResults:
     category_peak_sum: Dict[str, int]
     # A dictionary holding the set of unique PIDs observed for each category.
     category_pid_set: Dict[str, Set[str]]
+
+
+@dataclasses.dataclass
+class CpuAllocationPlan:
+    """Dataclass to hold the results of a CPU allocation planning."""
+    build_command_prefix: str
+    build_cores_desc: str
+    monitoring_cores: List[int]
+    monitoring_cores_desc: str

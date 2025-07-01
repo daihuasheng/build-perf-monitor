@@ -83,17 +83,12 @@ def _load_config(config_path: Path) -> AppConfig:
             ),
             # from [monitor.scheduling]
             monitor_core=scheduling_settings.get("monitor_core", 0),
-            build_cores_policy=scheduling_settings.get(
-                "build_cores_policy", "all_others"
+            scheduling_policy=scheduling_settings.get(
+                "scheduling_policy", "adaptive"
             ),
-            specific_build_cores=scheduling_settings.get("specific_build_cores", ""),
-            # from [monitor.scheduling] - New multi-process monitoring settings
-            monitoring_cores_policy=scheduling_settings.get(
-                "monitoring_cores_policy", "auto"
-            ),
-            num_monitoring_cores=scheduling_settings.get("num_monitoring_cores", 0),
-            specific_monitoring_cores=scheduling_settings.get(
-                "specific_monitoring_cores", ""
+            manual_build_cores=scheduling_settings.get("manual_build_cores", ""),
+            manual_monitoring_cores=scheduling_settings.get(
+                "manual_monitoring_cores", ""
             ),
             # from [monitor.general]
             default_jobs=general_settings.get("default_jobs", [4, 8, 16]),

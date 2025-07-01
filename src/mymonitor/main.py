@@ -1,17 +1,14 @@
 import argparse
 import logging
-import os
 import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import List
 import multiprocessing
 
 # Local application imports
-from .config import AppConfig, get_config
-from .data_models import ProjectConfig
+from .config import get_config
 from .monitor_utils import (
     BuildRunner,
     cleanup_processes,
@@ -93,8 +90,8 @@ def main_cli():
         except ValueError:
             logger.error(
                 f"Invalid format for --jobs: '{args.jobs}'. Use comma-separated integers."
-            )
-            sys.exit(1)
+        )
+        sys.exit(1)
     else:
         jobs_to_run = monitor_config.default_jobs
 
@@ -123,23 +120,21 @@ def main_cli():
                 runner = BuildRunner(
                     project_config=project,
                     parallelism_level=j_level,
-                    monitoring_interval=monitor_config.interval_seconds,
-                    log_dir=current_run_output_dir,
-                    collector_type=monitor_config.metric_type,
-                    skip_pre_clean=args.no_pre_clean,
-                    monitor_core_id_for_collector_and_build_avoidance=monitor_config.monitor_core,
-                    build_cpu_cores_policy=monitor_config.build_cores_policy,
-                    specific_build_cores_str=monitor_config.specific_build_cores,
-                    monitoring_cores_policy=monitor_config.monitoring_cores_policy,
-                    num_monitoring_cores=monitor_config.num_monitoring_cores,
-                    specific_monitoring_cores=monitor_config.specific_monitoring_cores,
+                monitoring_interval=monitor_config.interval_seconds,
+                log_dir=current_run_output_dir,
+                collector_type=monitor_config.metric_type,
+                skip_pre_clean=args.no_pre_clean,
+                    scheduling_policy=monitor_config.scheduling_policy,
+                    manual_build_cores=monitor_config.manual_build_cores,
+                    manual_monitoring_cores=monitor_config.manual_monitoring_cores,
+                    monitor_core_id=monitor_config.monitor_core,
                 )
                 runner.run()
             except Exception as e:
                 logger.error(
                     f"An unexpected error occurred during monitoring for -j{j_level}: {e}",
                     exc_info=True,
-                )
+            )
                 continue
         logger.info(f"<<< Finished processing for project: {project.name}")
 

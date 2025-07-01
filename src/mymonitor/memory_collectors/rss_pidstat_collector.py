@@ -76,6 +76,10 @@ class RssPidstatCollector(AbstractMemoryCollector):
         """
         return self.PIDSTAT_METRIC_FIELDS
 
+    def get_primary_metric_field(self) -> str:
+        """Return the main metric for this collector, which is RSS."""
+        return "RSS_KB"
+
     def start(self) -> None:
         """
         Starts the `pidstat` subprocess to begin collecting memory data.

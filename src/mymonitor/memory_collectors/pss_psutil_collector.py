@@ -94,6 +94,10 @@ class PssPsutilCollector(AbstractMemoryCollector):
         """
         return self.PSUTIL_METRIC_FIELDS
 
+    def get_primary_metric_field(self) -> str:
+        """Return the main metric for this collector, which is PSS."""
+        return "PSS_KB"
+
     def start(self) -> None:
         """
         Starts the memory collection process.

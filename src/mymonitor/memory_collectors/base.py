@@ -109,6 +109,11 @@ class AbstractMemoryCollector(ABC):
         pass
 
     @abstractmethod
+    def get_primary_metric_field(self) -> str:
+        """Returns the main metric field name used for aggregation."""
+        pass
+
+    @abstractmethod
     def read_samples(self) -> Iterable[List[ProcessMemorySample]]:
         """
         A generator that yields lists of ProcessMemorySample objects.
