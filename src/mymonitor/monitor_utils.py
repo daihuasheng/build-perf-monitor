@@ -17,6 +17,7 @@ import logging
 import multiprocessing
 import multiprocessing.pool
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -33,14 +34,24 @@ from .memory_collectors.base import AbstractMemoryCollector
 
 logger = logging.getLogger(__name__)
 
-# --- Global State for Signal Handling ---
-# This global variable holds the currently active BuildRunner instance. It's a
-# pragmatic solution to allow the signal handler to access the running
-# instance for graceful cleanup, as signal handlers in Python have a limited
-# signature and cannot be easily bound to class instances.
-current_runner: Optional["BuildRunner"] = None
-# 添加线程锁保护全局状态
-_current_runner_lock = threading.Lock()
+# --- Signal Handling Infrastructure ---
+# Since signal handlers cannot be bound to class instances directly,
+# we maintain a registry of active runners and their signal handlers.
+_active_runners: Dict[int, "BuildRunner"] = {}
+_active_runners_lock = threading.Lock()
+
+
+def _global_signal_handler(signum: int, frame: Any) -> None:
+    """
+    Global signal handler that delegates to active BuildRunner instances.
+    This is safer than using a single global variable as it can handle
+    multiple BuildRunner instances properly.
+    """
+    logger.warning(f"Signal {signum} received. Notifying all active BuildRunner instances.")
+    with _active_runners_lock:
+        for runner_id, runner in _active_runners.items():
+            logger.info(f"Requesting shutdown for BuildRunner {runner_id}")
+            runner.shutdown_requested.set()
 
 
 # This wrapper is necessary for multiprocessing.Pool to work correctly,
@@ -136,18 +147,6 @@ def _monitoring_worker_entry(
     return {}
 
 
-def cleanup_processes(*args: Any) -> None:
-    """
-    Global cleanup function, triggered by signal handlers.
-    This function should be very lightweight and only set a flag.
-    """
-    global current_runner
-    with _current_runner_lock:
-        if current_runner:
-            logger.warning("Shutdown signal received. Requesting graceful teardown.")
-            current_runner.shutdown_requested.set()
-
-
 class BuildRunner:
     """
     Encapsulates the state and logic for a single build and monitor run.
@@ -202,13 +201,49 @@ class BuildRunner:
         self.num_workers = 0
         self.results: Optional[MonitoringResults] = None
 
+        # --- Signal handling state ---
+        self._original_sigint_handler = None
+        self._original_sigterm_handler = None
+        self._signal_handlers_set = False
+
+    def _setup_signal_handlers(self) -> None:
+        """Set up signal handlers for this BuildRunner instance."""
+        try:
+            # Store original handlers so we can restore them later
+            self._original_sigint_handler = signal.signal(signal.SIGINT, _global_signal_handler)
+            self._original_sigterm_handler = signal.signal(signal.SIGTERM, _global_signal_handler)
+            self._signal_handlers_set = True
+            logger.debug("Signal handlers set up for BuildRunner instance")
+        except Exception as e:
+            logger.warning(f"Failed to set up signal handlers: {e}")
+
+    def _cleanup_signal_handlers(self) -> None:
+        """Restore original signal handlers."""
+        if not self._signal_handlers_set:
+            return
+        
+        try:
+            if self._original_sigint_handler is not None:
+                signal.signal(signal.SIGINT, self._original_sigint_handler)
+            if self._original_sigterm_handler is not None:
+                signal.signal(signal.SIGTERM, self._original_sigterm_handler)
+            logger.debug("Signal handlers restored for BuildRunner instance")
+        except Exception as e:
+            logger.warning(f"Failed to restore signal handlers: {e}")
+        finally:
+            self._signal_handlers_set = False
+
     def run(self) -> None:
         """
         Executes the entire build and monitor lifecycle.
         """
-        global current_runner
-        with _current_runner_lock:
-            current_runner = self
+        # Register this instance for signal handling
+        with _active_runners_lock:
+            _active_runners[id(self)] = self
+        
+        # Set up signal handlers
+        self._setup_signal_handlers()
+        
         try:
             self.setup()
             if self.run_context:
@@ -218,8 +253,11 @@ class BuildRunner:
             logger.error(f"An error occurred during the run: {e}", exc_info=True)
         finally:
             self.teardown()
-            with _current_runner_lock:
-                current_runner = None
+            # Clean up signal handlers
+            self._cleanup_signal_handlers()
+            # Unregister this instance
+            with _active_runners_lock:
+                _active_runners.pop(id(self), None)
 
     def setup(self) -> None:
         """

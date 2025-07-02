@@ -1,6 +1,5 @@
 import argparse
 import logging
-import signal
 import subprocess
 import sys
 import time
@@ -9,10 +8,7 @@ import multiprocessing
 
 # Local application imports
 from .config import get_config
-from .monitor_utils import (
-    BuildRunner,
-    cleanup_processes,
-)
+from .monitor_utils import BuildRunner
 from .process_utils import (
     check_pidstat_installed,
 )
@@ -42,10 +38,6 @@ def main_cli():
         # The context can only be set once. If it's already set, we can ignore the error.
         logger.debug("Multiprocessing context already set.")
         pass
-
-    # Directly link the signal to the simple, safe cleanup function
-    signal.signal(signal.SIGINT, cleanup_processes)
-    signal.signal(signal.SIGTERM, cleanup_processes)
 
     try:
         app_config = get_config()
