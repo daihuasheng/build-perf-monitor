@@ -31,34 +31,40 @@ _categorization_cache: Dict[Tuple[str, str], Tuple[str, str]] = {}
 
 
 def parse_shell_wrapper_command(cmd_name: str, cmd_full: str) -> Tuple[str, str]:
-    """
-    解析shell包装命令，提取实际执行的命令。
+    """Parse shell wrapper commands to extract the actual executed command.
     
-    这个函数识别常见的shell包装模式（如 sh -c, bash -c等），
-    并提取其中实际执行的命令，但排除用shell启动脚本的情况。
+    This function identifies common shell wrapper patterns (like sh -c, bash -c, etc.)
+    and extracts the actual command being executed, while excluding cases where
+    the shell is used to launch scripts.
     
     Args:
-        cmd_name: 进程的命令名称 (如 'sh', 'bash')
-        cmd_full: 完整的命令行字符串
+        cmd_name: The process command name (e.g., 'sh', 'bash').
+        cmd_full: The complete command line string.
         
     Returns:
-        Tuple[str, str]: (解析后的命令名称, 解析后的完整命令)
-        如果不是shell包装或解析失败，返回原始的(cmd_name, cmd_full)
+        A tuple of (parsed_command_name, parsed_full_command).
+        If not a shell wrapper or parsing fails, returns the original (cmd_name, cmd_full).
+        
+    Examples:
+        >>> parse_shell_wrapper_command('sh', 'sh -c "gcc -o test test.c"')
+        ('gcc', 'gcc -o test test.c')
+        >>> parse_shell_wrapper_command('bash', 'bash script.sh')
+        ('bash', 'bash script.sh')
     """
     
-    # 只处理常见的shell命令
+    # Only handle common shell commands
     if cmd_name not in ['sh', 'bash', 'zsh', 'dash']:
         return cmd_name, cmd_full
     
-    # 检查是否是 shell -c 模式
+    # Check if this is a shell -c pattern
     if ' -c ' not in cmd_full:
         return cmd_name, cmd_full
     
     try:
-        # 使用shlex安全解析命令行
+        # Use shlex to safely parse the command line
         parts = shlex.split(cmd_full)
         
-        # 寻找 -c 参数的位置
+        # Find the position of the -c argument
         c_index = -1
         for i, part in enumerate(parts):
             if part == '-c' and i + 1 < len(parts):
@@ -68,24 +74,24 @@ def parse_shell_wrapper_command(cmd_name: str, cmd_full: str) -> Tuple[str, str]
         if c_index == -1:
             return cmd_name, cmd_full
             
-        # 获取 -c 后面的命令字符串
+        # Get the command string after -c
         wrapped_command = parts[c_index + 1]
         
-        # 再次解析被包装的命令
+        # Parse the wrapped command again
         try:
             wrapped_parts = shlex.split(wrapped_command)
         except ValueError as e:
-            # 如果解析失败，可能是复杂的shell语法，保持原样
+            # If parsing fails, it might be complex shell syntax, keep original
             logger.debug(f"Failed to parse shell command '{wrapped_command}': {e}")
             return cmd_name, cmd_full
             
         if not wrapped_parts:
             return cmd_name, cmd_full
             
-        # 获取被包装命令的基本名称
+        # Get the base name of the wrapped command
         wrapped_cmd_name = Path(wrapped_parts[0]).name
         
-        # 检查是否是脚本文件 - 如果是，保持原始的shell分类
+        # Check if this is a script file - if so, keep the original shell classification
         if (wrapped_cmd_name.endswith('.sh') or 
             wrapped_cmd_name.endswith('.py') or 
             wrapped_cmd_name.endswith('.pl') or
@@ -98,12 +104,12 @@ def parse_shell_wrapper_command(cmd_name: str, cmd_full: str) -> Tuple[str, str]
             wrapped_parts[0].endswith('.js')):
             return cmd_name, cmd_full
             
-        # 检查是否是明显的脚本内容（包含shell语法）
+        # Check if this contains obvious script content (shell syntax)
         if any(syntax in wrapped_command for syntax in ['&&', '||', '|', ';', '$(', '`']):
-            # 如果包含shell语法，保持原始shell分类，因为这是脚本逻辑
+            # If it contains shell syntax, keep original shell classification as this is script logic
             return cmd_name, cmd_full
                 
-        # 如果被包装的命令看起来是一个简单的程序调用，返回解析后的结果
+        # If the wrapped command looks like a simple program call, return the parsed result
         logger.debug(f"Shell wrapper detected: '{cmd_full}' -> unwrapped: '{wrapped_cmd_name}', '{wrapped_command}'")
         return wrapped_cmd_name, wrapped_command
         
@@ -113,7 +119,23 @@ def parse_shell_wrapper_command(cmd_name: str, cmd_full: str) -> Tuple[str, str]
 
 
 def _parse_core_range_str(core_str: str) -> Set[int]:
-    """Parses a core range string (e.g., "1,2,4-7") into a set of integers."""
+    """Parse a core range string into a set of integer core IDs.
+    
+    Parses strings like "1,2,4-7" into sets of core IDs. Supports individual
+    cores and ranges separated by commas and hyphens.
+    
+    Args:
+        core_str: String representation of core ranges (e.g., "1,2,4-7").
+        
+    Returns:
+        Set of integer core IDs. Empty set if parsing fails.
+        
+    Examples:
+        >>> _parse_core_range_str("1,2,4-7")
+        {1, 2, 4, 5, 6, 7}
+        >>> _parse_core_range_str("")
+        set()
+    """
     cores = set()
     if not core_str:
         return cores
@@ -140,10 +162,26 @@ def plan_cpu_allocation(
     manual_monitor_cores_str: str,
     main_monitor_core: int,
 ) -> CpuAllocationPlan:
-    """
-    Creates a comprehensive CPU allocation plan based on the selected policy.
+    """Create a comprehensive CPU allocation plan based on the selected policy.
 
-    This is the central function for the intelligent, adaptive CPU scheduling.
+    This is the central function for intelligent, adaptive CPU scheduling. It determines
+    which cores to assign to build processes and monitoring workers based on the
+    configured scheduling policy, available system cores, and build parallelism level.
+
+    Args:
+        policy: Scheduling policy ("adaptive" or "manual").
+        j_level: Build parallelism level (number of parallel jobs).
+        manual_build_cores_str: Core range string for manual build allocation.
+        manual_monitor_cores_str: Core range string for manual monitor allocation.
+        main_monitor_core: Core ID for the main monitor process.
+
+    Returns:
+        CpuAllocationPlan containing taskset prefix, core descriptions, and
+        monitoring worker core assignments.
+
+    Note:
+        Requires 'taskset' command to be available for CPU pinning. Falls back
+        to shared core allocation if taskset is not found.
     """
     total_cores = psutil.cpu_count() or 1
     taskset_available = bool(shutil.which("taskset"))
@@ -175,7 +213,18 @@ def plan_cpu_allocation(
 def _plan_manual_allocation(
     build_cores_str: str, monitor_cores_str: str
 ) -> CpuAllocationPlan:
-    """Handles the 'manual' CPU allocation strategy."""
+    """Handle the 'manual' CPU allocation strategy.
+    
+    Creates CPU allocation plan based on user-specified core ranges for
+    both build and monitoring processes.
+    
+    Args:
+        build_cores_str: Core range string for build processes.
+        monitor_cores_str: Core range string for monitoring workers.
+        
+    Returns:
+        CpuAllocationPlan with manual core assignments.
+    """
     build_prefix = ""
     build_desc = "All (manual with no cores specified)"
     if build_cores_str:
@@ -198,10 +247,26 @@ def _plan_manual_allocation(
 def _plan_adaptive_allocation(
     total_cores: int, j_level: int, main_monitor_core: int
 ) -> CpuAllocationPlan:
-    """
-    Implements the 'adaptive' CPU allocation strategy (V2.1).
+    """Implement the 'adaptive' CPU allocation strategy (V2.1).
+    
     This version prioritizes giving surplus cores to the build process
-    and uses a max(static, proportional) buffer for build cores.
+    and uses a max(static, proportional) buffer for build cores. It automatically
+    determines optimal core allocation based on system resources and build requirements.
+    
+    The algorithm considers:
+    - Build parallelism level and required buffer cores
+    - Monitoring worker requirements
+    - System core availability
+    - Core isolation vs. shared allocation strategies
+    
+    Args:
+        total_cores: Total number of CPU cores available on the system.
+        j_level: Build parallelism level (number of parallel jobs).
+        main_monitor_core: Core ID reserved for the main monitor process.
+        
+    Returns:
+        CpuAllocationPlan with optimized core assignments for build-priority isolation
+        or mixed-shared mode depending on core availability.
     """
     # --- V2.1 Heuristics ---
     BUILD_CORE_FACTOR = 1.25
@@ -243,14 +308,14 @@ def _plan_adaptive_allocation(
         cores_for_build = all_cores - monitor_worker_cores - {main_monitor_core}
         build_cores = cores_for_build
 
-    # --- 边界检查：确保构建进程至少有一个核心 ---
+    # --- Boundary check: ensure build process has at least one core ---
     if not build_cores:
         logger.warning(
             f"No cores available for build process after allocation. "
             f"Falling back to shared mode with all cores except monitor core {main_monitor_core}."
         )
         build_cores = all_cores - {main_monitor_core}
-        # 如果连这都不行，至少给构建进程一个核心
+        # If even this doesn't work, give the build process at least one core
         if not build_cores:
             logger.warning("Extreme core scarcity: assigning all cores to build.")
             build_cores = all_cores
@@ -280,7 +345,25 @@ def _plan_adaptive_allocation(
 
 
 def _format_core_set_to_str(cores: Set[int]) -> str:
-    """Formats a set of core integers into a compact string like "0,2-4"."""
+    """Format a set of core integers into a compact string representation.
+    
+    Converts a set of core IDs into a string format suitable for taskset,
+    using ranges where possible for compactness.
+    
+    Args:
+        cores: Set of integer core IDs.
+        
+    Returns:
+        Formatted string like "0,2-4" or empty string if no cores.
+        
+    Examples:
+        >>> _format_core_set_to_str({0, 2, 3, 4})
+        "0,2-4"
+        >>> _format_core_set_to_str({1, 5})
+        "1,5"
+        >>> _format_core_set_to_str(set())
+        ""
+    """
     if not cores:
         return ""
 
@@ -305,17 +388,25 @@ def prepare_full_build_command(
     taskset_prefix: str,
     setup_command: Optional[str] = None,
 ) -> Tuple[str, Optional[str]]:
-    """
-    Constructs the full build command, including taskset prefix and parallelism.
+    """Construct the full build command including taskset prefix and parallelism.
+
+    Combines the build command template with parallelism level, CPU affinity prefix,
+    and optional setup commands to create the final executable command string.
 
     Args:
-        main_command_template: The build command template (e.g., "make -j{j_level}" or "make -j<N>").
-        j_level: The parallelism level.
-        taskset_prefix: The prefix command for CPU affinity (e.g., "taskset -c 0-7").
-        setup_command: An optional setup command to be sourced.
+        main_command_template: Build command template with placeholders
+            (e.g., "make -j{j_level}" or legacy "make -j<N>").
+        j_level: The parallelism level to substitute in the template.
+        taskset_prefix: CPU affinity prefix command (e.g., "taskset -c 0-7").
+        setup_command: Optional setup command to source before build.
 
     Returns:
-        A tuple containing the final command string and the executable for shell.
+        Tuple of (final_command_string, shell_executable).
+        shell_executable is None unless a specific shell is required.
+
+    Note:
+        Supports both modern {j_level} and legacy <N> placeholder formats
+        for backward compatibility.
     """
     # Convert legacy <N> placeholder to modern {j_level} format for backward compatibility
     normalized_template = main_command_template.replace("<N>", "{j_level}")
@@ -337,17 +428,25 @@ def prepare_full_build_command(
 def prepare_command_with_setup(
     main_command: str, setup_command: Optional[str]
 ) -> Tuple[str, Optional[str]]:
-    """
-    Combines a main command with an optional setup command (e.g., 'source').
+    """Combine a main command with an optional setup command.
 
-    It determines if a specific shell executable is needed.
+    Handles the combination of setup scripts (like environment sourcing) with
+    the main command, determining the appropriate shell executable if needed.
 
     Args:
         main_command: The primary command to execute.
-        setup_command: An optional setup command to be sourced before the main command.
+        setup_command: Optional setup command to source before main command
+            (e.g., "source env.sh").
 
     Returns:
-        A tuple containing the final command string and the executable for shell.
+        Tuple of (final_command_string, shell_executable).
+        shell_executable is the required shell path or None for default shell.
+
+    Examples:
+        >>> prepare_command_with_setup("make", "source env.sh")
+        ("source env.sh && make", None)
+        >>> prepare_command_with_setup("make", None)
+        ("make", None)
     """
     if setup_command:
         # If a setup command is provided, we need to use a shell to source it.
@@ -367,17 +466,24 @@ def prepare_command_with_setup(
 def run_command(
     command: str, cwd: Path, shell: bool = False, executable_shell: Optional[str] = None
 ) -> Tuple[int, str, str]:
-    """
-    Executes a command and captures its output, handling potential exceptions.
+    """Execute a command and capture its output with robust error handling.
+
+    Runs a subprocess command in the specified directory, capturing both stdout
+    and stderr while handling various error conditions gracefully.
 
     Args:
         command: The command string to execute.
-        cwd: The working directory to run the command in.
-        shell: Whether to use a shell for execution.
-        executable_shell: The specific shell to use (e.g., '/bin/bash').
+        cwd: Working directory path for command execution.
+        shell: Whether to use shell for execution (default: False).
+        executable_shell: Specific shell executable path (e.g., '/bin/bash').
 
     Returns:
-        A tuple containing the return code, stdout, and stderr.
+        Tuple of (return_code, stdout_string, stderr_string).
+        return_code is -1 for execution errors.
+
+    Note:
+        Uses UTF-8 encoding with error replacement for robust text handling.
+        Logs command execution details and any errors encountered.
     """
     logger.debug(f"Executing command: '{command}' in '{cwd}'")
     try:
@@ -404,22 +510,33 @@ def run_command(
 
 
 def get_process_category(cmd_name: str, cmd_full: str) -> Tuple[str, str]:
-    """
-    Categorizes a process based on a set of rules.
+    """Categorize a process based on configured classification rules.
 
-    This function uses an internal cache to avoid re-evaluating the same process
-    command line repeatedly, which can significantly speed up monitoring on
-    builds that spawn many identical processes.
+    This function applies a set of prioritized rules to classify processes into
+    major and minor categories (e.g., 'Compiler', 'gcc'). It uses caching to
+    avoid repeated rule evaluation for identical process command lines, which
+    significantly improves performance on builds with many similar processes.
 
-    The rules are loaded from `rules.toml` and applied in order of priority.
+    The function also handles shell wrapper commands by attempting to extract
+    the actual executed command from shell wrappers like 'sh -c "gcc ..."'.
 
     Args:
-        cmd_name: The base name of the command (e.g., 'gcc').
-        cmd_full: The full command line with all arguments.
+        cmd_name: Base name of the command executable (e.g., 'gcc').
+        cmd_full: Complete command line with all arguments.
 
     Returns:
-        A tuple of (major_category, minor_category).
-        Defaults to ('Unknown', 'Unknown') if no rules match.
+        Tuple of (major_category, minor_category) strings.
+        Returns ('Other', 'Other_<cmd_name>') if no rules match.
+
+    Note:
+        Rules are loaded from the application configuration and applied in
+        priority order. Results are cached up to the configured cache size limit.
+
+    Examples:
+        >>> get_process_category('gcc', 'gcc -O2 -c file.c')
+        ('Compiler', 'gcc')
+        >>> get_process_category('unknown_tool', 'unknown_tool --help')
+        ('Other', 'Other_unknown_tool')
     """
     # Check cache first
     cache_key = (cmd_name, cmd_full)
@@ -428,7 +545,7 @@ def get_process_category(cmd_name: str, cmd_full: str) -> Tuple[str, str]:
     
     app_config = config.get_config()
     
-    # 尝试解析shell包装命令
+    # Try to parse shell wrapper commands
     current_cmd_name, current_cmd_full = parse_shell_wrapper_command(cmd_name, cmd_full)
 
     for rule in app_config.rules:
@@ -465,7 +582,7 @@ def get_process_category(cmd_name: str, cmd_full: str) -> Tuple[str, str]:
                 _categorization_cache[cache_key] = result
             return result
 
-    # 如果没有规则匹配，生成基于原始命令名称的分类
+    # If no rules match, generate a classification based on the original command name
     result = ("Other", f"Other_{current_cmd_name}")
     # Cache the result, but respect the cache size limit
     if len(_categorization_cache) < app_config.monitor.categorization_cache_size:
@@ -474,5 +591,13 @@ def get_process_category(cmd_name: str, cmd_full: str) -> Tuple[str, str]:
 
 
 def check_pidstat_installed() -> bool:
-    """Checks if the 'pidstat' command is available on the system."""
+    """Check if the 'pidstat' command is available on the system.
+    
+    Returns:
+        True if pidstat is found in the system PATH, False otherwise.
+        
+    Note:
+        The pidstat tool is part of the sysstat package and is required
+        for RSS memory collection using the rss_pidstat collector.
+    """
     return shutil.which("pidstat") is not None

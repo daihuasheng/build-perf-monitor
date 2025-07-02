@@ -1,3 +1,23 @@
+"""Main command-line interface for the MyMonitor build performance monitoring application.
+
+This module serves as the primary entry point for the MyMonitor application, providing
+a command-line interface for monitoring build processes and collecting performance data.
+It coordinates configuration loading, project selection, build execution monitoring,
+and result visualization.
+
+The main workflow includes:
+1. Loading configuration from TOML files
+2. Parsing command-line arguments for project and job selection
+3. Executing monitoring runs for each project/job combination
+4. Generating performance plots and reports
+
+Usage:
+    python -m mymonitor.main [--project PROJECT] [--jobs JOBS] [--no-pre-clean]
+
+Example:
+    python -m mymonitor.main --project chromium --jobs 8,16 --no-pre-clean
+"""
+
 import argparse
 import logging
 import subprocess
@@ -24,11 +44,23 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# --- Standardized Error Handling for Main ---
-
-def main_cli():
-    """
-    Main command-line interface for the MyMonitor application.
+def main_cli() -> None:
+    """Main command-line interface for the MyMonitor application.
+    
+    This function provides the primary entry point for the CLI, handling:
+    - Multiprocessing configuration for cross-platform compatibility
+    - Configuration loading and validation
+    - Command-line argument parsing
+    - Project and job validation
+    - Monitoring execution coordination
+    - Plot generation orchestration
+    
+    The function sets up multiprocessing to use the 'spawn' method for stability
+    across different platforms and processes each specified project with each
+    specified parallelism level.
+    
+    Raises:
+        SystemExit: On configuration errors, validation failures, or execution problems.
     """
     # Set the start method for multiprocessing to 'spawn' to ensure stability
     # across different platforms and avoid potential deadlocks with fork.
