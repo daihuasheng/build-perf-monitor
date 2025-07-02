@@ -564,7 +564,7 @@ class BuildRunner:
                             "timestamp": worker_result["timestamp"],
                         }
                     )
-            except:
+            except Exception:
                 # 队列为空或超时，退出循环
                 break
 
@@ -708,7 +708,7 @@ class BuildRunner:
                     for f in opened_files.values():
                         try:
                             f.close()
-                        except:
+                        except Exception:
                             pass
                     raise
             
@@ -718,7 +718,7 @@ class BuildRunner:
             for f in opened_files.values():
                 try:
                     f.close()
-                except:
+                except Exception:
                     pass
             raise
 

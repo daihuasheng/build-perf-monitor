@@ -217,7 +217,7 @@ class RssPidstatCollector(AbstractMemoryCollector):
                     if self.pidstat_proc.poll() is None:
                         self.pidstat_proc.kill()
                         self.pidstat_proc.wait(timeout=1)
-                except:
+                except Exception:
                     pass  # 最后的尝试，忽略所有异常
             finally:
                 self.pidstat_proc = None  # 确保进程对象被清理
