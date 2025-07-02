@@ -780,53 +780,82 @@ class BuildRunner:
         )
 
     def _open_log_files(self) -> None:
-        """Opens all log files required for the run."""
+        """Opens all log files required for the run with robust error handling."""
         if not self.run_context:
             raise ValueError("RunContext not initialized.")
+        
         paths = self.run_context.paths
         log_dir = paths.output_parquet_file.parent
         
-        # 使用更安全的文件打开方式，避免文件描述符泄漏
+        file_paths = {
+            "summary_log": paths.output_summary_log_file,
+            "build_stdout": log_dir / "build_stdout.log",
+            "build_stderr": log_dir / "build_stderr.log", 
+            "clean_log": log_dir / "clean.log",
+            "metadata_log": log_dir / "metadata.log",
+        }
+        
         opened_files = {}
+        failed_files = []
+        
         try:
-            file_paths = {
-                "summary_log": paths.output_summary_log_file,
-                "build_stdout": log_dir / "build_stdout.log",
-                "build_stderr": log_dir / "build_stderr.log", 
-                "clean_log": log_dir / "clean.log",
-                "metadata_log": log_dir / "metadata.log",
-            }
-            
             for name, path in file_paths.items():
                 try:
                     opened_files[name] = open(path, "w", encoding="utf-8")
+                    logger.debug(f"Successfully opened log file: {name} -> {path}")
                 except Exception as e:
+                    failed_files.append((name, path, str(e)))
                     logger.error(f"Failed to open {name} at {path}: {e}")
-                    # 关闭已打开的文件
-                    for f in opened_files.values():
-                        try:
-                            f.close()
-                        except Exception:
-                            pass
-                    raise
+                    # Don't break here - try to open remaining files and then cleanup
             
+            # If any files failed to open, cleanup and raise
+            if failed_files:
+                self._safe_close_files(opened_files)
+                error_details = "; ".join([f"{name}({path}): {error}" for name, path, error in failed_files])
+                raise IOError(f"Failed to open {len(failed_files)} log files: {error_details}")
+            
+            # All files opened successfully
             self.log_files = opened_files
-        except Exception:
-            # 确保所有已打开的文件都被关闭
-            for f in opened_files.values():
-                try:
-                    f.close()
-                except Exception:
-                    pass
+            logger.info(f"Successfully opened {len(opened_files)} log files")
+            
+        except Exception as e:
+            # Ensure cleanup even if failed_files check or assignment fails
+            self._safe_close_files(opened_files)
+            logger.error(f"Error in log file opening process: {e}")
             raise
 
-    def _close_log_files(self) -> None:
-        """Closes all opened log files."""
-        for f in self.log_files.values():
+    def _safe_close_files(self, files_dict: Dict[str, Any]) -> None:
+        """Safely close a dictionary of file handles with individual error handling."""
+        if not files_dict:
+            return
+            
+        closed_count = 0
+        failed_count = 0
+        
+        for name, file_handle in files_dict.items():
             try:
-                f.close()
+                if file_handle and hasattr(file_handle, 'close'):
+                    file_handle.close()
+                    closed_count += 1
+                    logger.debug(f"Successfully closed log file: {name}")
             except Exception as e:
-                logger.error(f"Failed to close log file: {e}")
+                failed_count += 1
+                logger.warning(f"Failed to close log file {name}: {e}")
+                # Continue trying to close other files
+        
+        if closed_count > 0:
+            logger.debug(f"Closed {closed_count} log files successfully")
+        if failed_count > 0:
+            logger.warning(f"Failed to close {failed_count} log files")
+
+    def _close_log_files(self) -> None:
+        """Closes all opened log files using safe cleanup."""
+        if not self.log_files:
+            logger.debug("No log files to close")
+            return
+            
+        logger.debug(f"Closing {len(self.log_files)} log files")
+        self._safe_close_files(self.log_files)
         self.log_files.clear()
 
     def _log_run_prologue(self) -> None:
