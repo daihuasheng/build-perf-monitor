@@ -289,7 +289,7 @@ def test_invalid_jobs_argument(monkeypatch, caplog):
     assert e.value.code == 1, f"main_cli exited with code {e.value.code} instead of 1"
 
     # --- Verification ---
-    expected_error_msg = f"Invalid format for --jobs: '{invalid_jobs_str}'"
+    expected_error_msg = f"CLI parsing --jobs argument '{invalid_jobs_str}': ValueError:"
     assert expected_error_msg in caplog.text, (
         f"Expected error message '{expected_error_msg}' not found in logs.\n"
         f"LOGS:\n{caplog.text}"
