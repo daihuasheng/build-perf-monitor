@@ -81,6 +81,7 @@ def _monitoring_worker_entry(
 
     logger.info(f"Monitoring worker started (core: {core_id})")
     processed_groups = 0
+    sentinel_seen = False
     
     # The loop will run until it receives a sentinel value (None)
     while True:
@@ -92,9 +93,18 @@ def _monitoring_worker_entry(
             
         if queue_item is None:  # Sentinel value received
             logger.info(f"Worker: Received sentinel, processed {processed_groups} groups")
-            input_queue.put(None)  # Propagate sentinel for other workers
+            # Only propagate sentinel if this worker hasn't seen it before
+            # This prevents multiple workers from flooding the queue with sentinels
+            if not sentinel_seen:
+                try:
+                    input_queue.put(None, timeout=0.5)  # Use timeout to avoid blocking
+                    logger.debug("Worker: Propagated sentinel to other workers")
+                except Exception as e:
+                    logger.debug(f"Worker: Failed to propagate sentinel (queue might be full): {e}")
+                sentinel_seen = True
             break
 
+        # Process normal data
         sample_group, timestamp = queue_item
         processed_groups += 1
         logger.debug(f"Worker: Processing group {processed_groups} with {len(sample_group)} samples")
@@ -140,8 +150,12 @@ def _monitoring_worker_entry(
         local_results["group_total_memory"] = group_total_memory
 
         # Put the processed chunk of data onto the output queue
-        output_queue.put(local_results)
-        logger.debug(f"Worker: Put processed group {processed_groups} into output queue (total memory: {group_total_memory} KB)")
+        try:
+            output_queue.put(local_results, timeout=2.0)  # Add timeout to prevent blocking
+            logger.debug(f"Worker: Put processed group {processed_groups} into output queue (total memory: {group_total_memory} KB)")
+        except Exception as e:
+            logger.warning(f"Worker: Failed to put result into output queue: {e}")
+            # Continue processing even if one put fails
 
     logger.info(f"Monitoring worker finished, processed {processed_groups} groups")
     return {}
@@ -205,6 +219,11 @@ class BuildRunner:
         self._original_sigint_handler = None
         self._original_sigterm_handler = None
         self._signal_handlers_set = False
+
+        # --- Synchronization events for better coordination ---
+        self._producer_finished = threading.Event()
+        self._workers_finished = threading.Event()
+        self._all_data_queued = threading.Event()
 
     def _setup_signal_handlers(self) -> None:
         """Set up signal handlers for this BuildRunner instance."""
@@ -542,39 +561,61 @@ class BuildRunner:
             self.collector.stop()
 
         if self.producer_thread:
-            self.producer_thread.join()
+            logger.info("Waiting for producer thread to finish...")
+            self.producer_thread.join(timeout=10)
+            if self.producer_thread.is_alive():
+                logger.warning("Producer thread did not finish in time")
+            else:
+                self._producer_finished.set()
 
         # Signal monitoring workers to terminate and wait for them
         if self.monitoring_worker_processes:
             logger.info("All data queued. Signaling monitoring workers to terminate.")
-            # 使用非阻塞方式发送终止信号，避免死锁
+            
+            # Send exactly one sentinel per worker to avoid queue flooding
             for i in range(self.num_workers):
                 try:
-                    self.input_queue.put(None, timeout=1.0)  # 使用超时避免无限阻塞
+                    self.input_queue.put(None, timeout=2.0)
+                    logger.debug(f"Sent termination signal to worker {i+1}")
                 except Exception as e:
-                    logger.warning(f"Failed to send termination signal to worker {i+1}, forcing termination: {e}")
+                    logger.warning(f"Failed to send termination signal to worker {i+1}: {e}")
                     break
 
-            # Wait for all worker processes to finish
-            for process in self.monitoring_worker_processes:
-                process.join(timeout=10)
-                if process.is_alive():
-                    logger.warning(f"Worker process {process.pid} did not finish gracefully.")
+            # Wait for all worker processes to finish with proper timeout
+            for i, process in enumerate(self.monitoring_worker_processes):
+                try:
+                    process.join(timeout=15)  # Increased timeout for processing
+                    if process.is_alive():
+                        logger.warning(f"Worker process {i+1} (PID: {process.pid}) did not finish gracefully.")
+                    else:
+                        logger.debug(f"Worker process {i+1} finished successfully")
+                except Exception as e:
+                    logger.warning(f"Error waiting for worker process {i+1}: {e}")
+            
+            # Set workers finished event
+            self._workers_finished.set()
             logger.info("All monitoring workers have terminated.")
 
+        # Process output queue with improved handling
         all_samples_data = []
         final_category_pid_set: Dict[str, set] = {}
         final_category_peak_sum: Dict[str, float] = {}
         group_memory_snapshots = []
 
-        # Check output queue - 修复竞态条件
         output_items_count = 0
         logger.info("Starting to process output queue...")
-        # 使用更安全的队列处理方式，避免竞态条件
-        while True:
+        
+        # Give workers time to finish writing to output queue
+        time.sleep(0.5)
+        
+        # Process all items in output queue with improved retry logic
+        consecutive_timeouts = 0
+        max_consecutive_timeouts = 3
+        
+        while consecutive_timeouts < max_consecutive_timeouts:
             try:
-                # 使用非阻塞get，避免empty()和get()之间的竞态条件
-                worker_result = self.output_queue.get(timeout=0.1)
+                worker_result = self.output_queue.get(timeout=0.5)
+                consecutive_timeouts = 0  # Reset timeout counter on successful get
                 output_items_count += 1
                 logger.debug(f"Processing output item {output_items_count}")
                 
@@ -603,8 +644,9 @@ class BuildRunner:
                         }
                     )
             except Exception:
-                # 队列为空或超时，退出循环
-                break
+                # Count consecutive timeouts to determine when to stop
+                consecutive_timeouts += 1
+                logger.debug(f"Output queue timeout {consecutive_timeouts}/{max_consecutive_timeouts}")
 
         logger.info(f"Processed {output_items_count} output items from workers")
         logger.info(f"Total samples collected: {len(all_samples_data)}")
@@ -680,22 +722,40 @@ class BuildRunner:
         for the worker processes to consume.
         """
         if not self.input_queue or not self.collector:
+            logger.error("Producer: Input queue or collector not available")
             return
 
         logger.info("Producer loop started. Reading samples from collector.")
         sample_count = 0
-        for sample_group in self.collector.read_samples():
-            sample_count += 1
-            logger.debug(f"Producer: Received sample group {sample_count} with {len(sample_group)} samples")
-            # Add a timestamp to the group for later aggregation
-            timestamp = pd.Timestamp.now()
-            # Pass data as a tuple to avoid modifying the original sample object
-            self.input_queue.put((sample_group, timestamp))
-            logger.debug(f"Producer: Put sample group {sample_count} into input queue")
+        
+        try:
+            for sample_group in self.collector.read_samples():
+                # Check for shutdown request
+                if self.shutdown_requested.is_set():
+                    logger.info("Producer: Shutdown requested, stopping sample collection")
+                    break
+                    
+                sample_count += 1
+                logger.debug(f"Producer: Received sample group {sample_count} with {len(sample_group)} samples")
+                
+                # Add a timestamp to the group for later aggregation
+                timestamp = pd.Timestamp.now()
+                
+                try:
+                    # Use timeout to avoid blocking indefinitely
+                    self.input_queue.put((sample_group, timestamp), timeout=5.0)
+                    logger.debug(f"Producer: Put sample group {sample_count} into input queue")
+                except Exception as e:
+                    logger.warning(f"Producer: Failed to queue sample group {sample_count}: {e}")
+                    # Continue trying to process remaining samples
+                    continue
 
-        logger.info(f"Producer loop finished. Processed {sample_count} sample groups. All samples have been queued.")
-
-
+        except Exception as e:
+            logger.error(f"Producer: Error in sample collection loop: {e}", exc_info=True)
+        finally:
+            logger.info(f"Producer loop finished. Processed {sample_count} sample groups. All samples have been queued.")
+            # Signal that all data has been queued for processing
+            self._all_data_queued.set()
 
     @staticmethod
     def _generate_run_paths(
