@@ -75,7 +75,7 @@ def _monitoring_worker_entry(
     while True:
         try:
             queue_item = input_queue.get(timeout=1.0)  # Add timeout to avoid hanging
-        except:
+        except Exception:
             logger.debug("Worker: Queue get timeout, checking for sentinel")
             continue
             
@@ -513,8 +513,8 @@ class BuildRunner:
             for i in range(self.num_workers):
                 try:
                     self.input_queue.put(None, timeout=1.0)  # 使用超时避免无限阻塞
-                except:
-                    logger.warning(f"Failed to send termination signal to worker {i+1}, forcing termination")
+                except Exception as e:
+                    logger.warning(f"Failed to send termination signal to worker {i+1}, forcing termination: {e}")
                     break
 
             # Wait for all worker processes to finish
