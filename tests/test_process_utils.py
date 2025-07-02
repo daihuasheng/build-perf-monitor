@@ -31,7 +31,7 @@ def mock_rules_config(monkeypatch):
             priority=125,
             match_field="current_cmd_full",
             match_type="regex",
-            pattern=r"^(?:.*/)?(clang\+\+|clang|gcc|g\+\+|cc)\b.*\s-c(\s|$)",
+            patterns=r"^(?:.*/)?(clang\+\+|clang|gcc|g\+\+|cc)\b.*\s-c(\s|$)",
         ),
         RuleConfig(
             major_category="CPP_Link",
@@ -47,7 +47,7 @@ def mock_rules_config(monkeypatch):
             priority=190,
             match_field="current_cmd_name",
             match_type="exact",
-            pattern="ninja",
+            patterns="ninja",
         ),
         RuleConfig(
             major_category="Scripting",
@@ -55,7 +55,7 @@ def mock_rules_config(monkeypatch):
             priority=62,
             match_field="current_cmd_full",
             match_type="regex",
-            pattern=r"\.sh(\s|$|')",
+            patterns=r"\.sh(\s|$|')",
         ),
         RuleConfig(
             major_category="Scripting",
@@ -70,8 +70,8 @@ def mock_rules_config(monkeypatch):
             category="ShellScriptFile",
             priority=45,
             match_field="current_cmd_name",
-            match_type="endswith",
-            pattern=".sh",
+            match_type="exact",
+            patterns=".sh",
         ),
 
     ]

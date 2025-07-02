@@ -309,7 +309,7 @@ def prepare_full_build_command(
     Constructs the full build command, including taskset prefix and parallelism.
 
     Args:
-        main_command_template: The build command template (e.g., "make -j{j_level}").
+        main_command_template: The build command template (e.g., "make -j{j_level}" or "make -j<N>").
         j_level: The parallelism level.
         taskset_prefix: The prefix command for CPU affinity (e.g., "taskset -c 0-7").
         setup_command: An optional setup command to be sourced.
@@ -317,9 +317,12 @@ def prepare_full_build_command(
     Returns:
         A tuple containing the final command string and the executable for shell.
     """
+    # Convert legacy <N> placeholder to modern {j_level} format for backward compatibility
+    normalized_template = main_command_template.replace("<N>", "{j_level}")
+    
     # Format the core build command with the parallelism level.
     # The template is expected to contain the argument name, e.g., "make -j{j_level}".
-    build_command = main_command_template.format(j_level=j_level)
+    build_command = normalized_template.format(j_level=j_level)
 
     # Prepend the taskset prefix if it exists to the core build command.
     if taskset_prefix:
@@ -437,21 +440,23 @@ def get_process_category(cmd_name: str, cmd_full: str) -> Tuple[str, str]:
 
         match = False
         if rule.match_type == "exact":
-            match = target_field_value == rule.pattern
+            # For exact match, patterns should be a string
+            pattern_to_match = rule.patterns if isinstance(rule.patterns, str) else rule.patterns[0] if rule.patterns else ""
+            match = target_field_value == pattern_to_match
         elif rule.match_type == "contains":
-            match = rule.pattern and rule.pattern in target_field_value
+            # For contains match, patterns should be a string
+            pattern_to_match = rule.patterns if isinstance(rule.patterns, str) else rule.patterns[0] if rule.patterns else ""
+            match = pattern_to_match and pattern_to_match in target_field_value
         elif rule.match_type == "regex":
-            if rule.pattern and re.search(rule.pattern, target_field_value):
-                match = True
+            # For regex match, patterns should be a string
+            pattern_to_match = rule.patterns if isinstance(rule.patterns, str) else rule.patterns[0] if rule.patterns else ""
+            if pattern_to_match:
+                import re
+                match = bool(re.search(pattern_to_match, target_field_value))
         elif rule.match_type == "in_list":
-            if rule.patterns and target_field_value in rule.patterns:
-                match = True
-        elif rule.match_type == "starts_with":
-            if rule.pattern and target_field_value.startswith(rule.pattern):
-                match = True
-        elif rule.match_type == "endswith":
-            if rule.pattern and target_field_value.endswith(rule.pattern):
-                match = True
+            # For in_list match, patterns should be a list
+            patterns_to_check = rule.patterns if isinstance(rule.patterns, list) else [rule.patterns] if rule.patterns else []
+            match = target_field_value in patterns_to_check
 
         if match:
             result = (rule.major_category, rule.category)

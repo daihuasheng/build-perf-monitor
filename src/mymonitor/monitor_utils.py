@@ -31,7 +31,9 @@ import psutil
 from . import process_utils
 from .data_models import (
     MonitoringResults, ProjectConfig, RunContext, RunPaths,
-    ErrorSeverity, handle_error, handle_file_error, handle_subprocess_error
+    ErrorSeverity, handle_error, handle_file_error, handle_subprocess_error,
+    ValidationError, validate_positive_integer, validate_positive_float, 
+    validate_enum_choice, validate_cpu_core_range
 )
 from .memory_collectors.base import AbstractMemoryCollector
 
@@ -211,6 +213,7 @@ class BuildRunner:
         manual_monitoring_cores: str,
         monitor_core_id: int,
     ):
+        # Store original parameter values
         self.project_config = project_config
         self.parallelism_level = parallelism_level
         self.monitoring_interval = monitoring_interval
@@ -222,6 +225,69 @@ class BuildRunner:
         self.manual_build_cores = manual_build_cores
         self.manual_monitoring_cores = manual_monitoring_cores
         self.monitor_core_id = monitor_core_id
+
+        # Validate all input parameters
+        try:
+            # Validate basic numeric parameters
+            self.parallelism_level = validate_positive_integer(
+                self.parallelism_level,
+                min_value=1,
+                max_value=1024,
+                field_name="parallelism_level"
+            )
+            
+            self.monitoring_interval = validate_positive_float(
+                self.monitoring_interval,
+                min_value=0.001,  # 1ms minimum
+                max_value=60.0,   # 60s maximum
+                field_name="monitoring_interval"
+            )
+            
+            self.monitor_core_id = validate_positive_integer(
+                self.monitor_core_id,
+                min_value=0,
+                max_value=1023,
+                field_name="monitor_core_id"
+            )
+            
+            # Validate enum choices
+            self.collector_type = validate_enum_choice(
+                self.collector_type,
+                valid_choices=["pss_psutil", "rss_pidstat"],
+                field_name="collector_type"
+            )
+            
+            self.scheduling_policy = validate_enum_choice(
+                self.scheduling_policy,
+                valid_choices=["adaptive", "manual"],
+                field_name="scheduling_policy"
+            )
+            
+            # Validate CPU core ranges
+            import os
+            max_cores = os.cpu_count() or 1
+            
+            self.manual_build_cores = validate_cpu_core_range(
+                self.manual_build_cores,
+                max_cores=max_cores,
+                field_name="manual_build_cores"
+            )
+            
+            self.manual_monitoring_cores = validate_cpu_core_range(
+                self.manual_monitoring_cores,
+                max_cores=max_cores,
+                field_name="manual_monitoring_cores"
+            )
+            
+            # Validate log directory
+            if not isinstance(self.log_dir, Path):
+                self.log_dir = Path(self.log_dir)
+            if not self.log_dir.parent.exists():
+                raise ValidationError(f"Parent directory of log_dir does not exist: {self.log_dir.parent}")
+            
+        except ValidationError as e:
+            logger.error(f"BuildRunner parameter validation failed: {e}")
+            raise
 
         # --- Initialize state variables ---
         self.current_timestamp_str = time.strftime("%Y%m%d_%H%M%S")

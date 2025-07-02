@@ -84,7 +84,7 @@ def setup_test_config_files(tmp_path: Path) -> Path:
                 "process_pattern": "fake_build_script.sh|sleep",
                 "setup_command_template": "echo 'Fake setup complete'",
                 "clean_command_template": "echo 'Fake clean complete'",
-                "build_command_template": str(FAKE_BUILD_SCRIPT_PATH),
+                "build_command_template": f"{str(FAKE_BUILD_SCRIPT_PATH)} <N>",
             }
         ]
     }
@@ -289,7 +289,7 @@ def test_invalid_jobs_argument(monkeypatch, caplog):
     assert e.value.code == 1, f"main_cli exited with code {e.value.code} instead of 1"
 
     # --- Verification ---
-    expected_error_msg = f"CLI parsing --jobs argument '{invalid_jobs_str}': ValueError:"
+    expected_error_msg = f"CLI jobs argument validation: ValidationError: --jobs argument item must be a valid integer, got '{invalid_jobs_str}'"
     assert expected_error_msg in caplog.text, (
         f"Expected error message '{expected_error_msg}' not found in logs.\n"
         f"LOGS:\n{caplog.text}"

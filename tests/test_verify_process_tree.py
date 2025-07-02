@@ -68,13 +68,13 @@ def setup_verifier_test_env(tmp_path: Path) -> Path:
             {
                 "name": "SuccessProject",
                 "dir": str(tmp_path),
-                "build_command_template": str(success_script_path),
+                "build_command_template": f"{str(success_script_path)} <N>",
                 "process_pattern": r"fake_build_success\.sh|sleep 0\.2",
             },
             {
                 "name": "FailureProject",
                 "dir": str(tmp_path),
-                "build_command_template": str(failure_script_path),
+                "build_command_template": f"{str(failure_script_path)} <N>",
                 "process_pattern": r"fake_build_failure\.sh|sleep 0\.5",
             },
         ]

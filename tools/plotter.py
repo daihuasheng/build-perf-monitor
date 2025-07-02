@@ -87,11 +87,17 @@ def _parse_summary_log(filepath: Path) -> Optional[Dict[str, Any]]:
             r"Total Build & Monitoring Duration:\s*.*?\((\d+\.\d+) seconds\)", content
         )
         peak_mem_match = re.search(
-            r"Peak Overall Memory \((\w+)\):\s*(\d+)\s*KB", content
+            r"Peak Overall Memory \(([^)]+)\):\s*(\d+)\s*KB", content
         )
 
         # Ensure all required pieces of information were successfully extracted.
         if all([project_match, jobs_match, duration_match, peak_mem_match]):
+            # Add type assertions to satisfy the linter
+            assert project_match is not None
+            assert jobs_match is not None
+            assert duration_match is not None
+            assert peak_mem_match is not None
+            
             # Return a dictionary with standardized keys for DataFrame creation.
             return {
                 "project": project_match.group(1).strip(),
@@ -212,18 +218,21 @@ def generate_run_summary_plot(args: argparse.Namespace):
 
     # Group data by project name to generate a separate plot for each.
     for project_name, group_df in df_summary.groupby("project"):
+        # Ensure project_name is a string for type safety
+        project_name_str = str(project_name)
+        
         # A comparison plot requires at least two data points.
         if len(group_df) < 2:
             logger.info(
-                f"Skipping summary plot for '{project_name}': only one data point found."
+                f"Skipping summary plot for '{project_name_str}': only one data point found."
             )
             continue
 
         # Assume the metric is the same for all runs of a single project.
         metric = group_df["metric"].iloc[0]
-        fig = _create_summary_figure(group_df, project_name, metric)
+        fig = _create_summary_figure(group_df, project_name_str, metric)
 
-        base_filename = f"{project_name}_build_summary_plot"
+        base_filename = f"{project_name_str}_build_summary_plot"
         _save_plotly_figure(fig, base_filename, args.output_dir or args.log_dir)
 
 
@@ -601,24 +610,23 @@ def plot_memory_usage_from_data_file(data_filepath: Path, args: argparse.Namespa
                 f"Using user-provided resample interval: {resample_interval_str_polars}"
             )
         else:
-            # Dynamically determine a reasonable resampling interval based on data duration.
-            min_time_dt = df_plot_data_pl["Timestamp"].min()
-            max_time_dt = df_plot_data_pl["Timestamp"].max()
-            duration_seconds = (
-                (max_time_dt - min_time_dt).total_seconds()
-                if min_time_dt and max_time_dt
-                else 0
-            )
-            if duration_seconds <= 60:
+            # Dynamically determine resampling interval based on data size
+            # Use number of data points as a proxy for duration to avoid datetime type issues
+            num_samples = len(df_plot_data_pl)
+            
+            # Heuristic: estimate data collection duration based on sample count
+            # Assuming typical monitoring intervals of 1-2 seconds per sample
+            if num_samples <= 60:  # ~1 minute of data
                 resample_interval_str_polars = "5s"
-            elif duration_seconds < 300:
+            elif num_samples <= 300:  # ~5 minutes of data  
                 resample_interval_str_polars = "10s"
-            elif duration_seconds < 900:
+            elif num_samples <= 900:  # ~15 minutes of data
                 resample_interval_str_polars = "30s"
-            else:
+            else:  # Longer builds
                 resample_interval_str_polars = "1m"
+            
             logger.info(
-                f"Data duration: {duration_seconds:.0f}s. Using dynamic resample interval: {resample_interval_str_polars}"
+                f"Data points: {num_samples}. Using resample interval: {resample_interval_str_polars}"
             )
 
         # --- Plot Generation ---
@@ -717,9 +725,54 @@ def main():
 
     args = parser.parse_args()
 
+    # Validate command line arguments
     if not args.log_dir.is_dir():
         logger.error(f"Log directory not found: {args.log_dir}")
         sys.exit(1)
+    
+    # Additional validation for numeric arguments
+    if args.jobs is not None:
+        if args.jobs < 1 or args.jobs > 1024:
+            logger.error(f"Invalid --jobs value: {args.jobs}. Must be between 1 and 1024.")
+            sys.exit(1)
+    
+    if args.top_n is not None:
+        if args.top_n < 1 or args.top_n > 100:
+            logger.error(f"Invalid --top-n value: {args.top_n}. Must be between 1 and 100.")
+            sys.exit(1)
+    
+    # Validate project name format if provided
+    if args.project_name is not None:
+        if not isinstance(args.project_name, str) or not args.project_name.strip():
+            logger.error("Project name cannot be empty.")
+            sys.exit(1)
+        
+        # Check for valid characters (basic validation)
+        import re
+        if not re.match(r'^[a-zA-Z0-9_-]+$', args.project_name):
+            logger.error(f"Invalid project name '{args.project_name}'. Only letters, numbers, hyphens, and underscores are allowed.")
+            sys.exit(1)
+    
+    # Validate output directory if provided
+    if args.output_dir is not None:
+        if not args.output_dir.parent.exists():
+            logger.error(f"Parent directory of output directory does not exist: {args.output_dir.parent}")
+            sys.exit(1)
+        
+        # Try to create the output directory if it doesn't exist
+        try:
+            args.output_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            logger.error(f"Cannot create output directory '{args.output_dir}': {e}")
+            sys.exit(1)
+    
+    # Validate resample interval format if provided
+    if args.resample_interval is not None:
+        # Basic validation for Polars interval format
+        import re
+        if not re.match(r'^\d+[smhdw]$', args.resample_interval):
+            logger.error(f"Invalid resample interval format '{args.resample_interval}'. Expected format: number followed by s/m/h/d/w (e.g., '10s', '1m').")
+            sys.exit(1)
 
     # --- Dispatch to the correct mode ---
     if args.summary_plot:

@@ -25,7 +25,24 @@ def app_config_real_rules(monkeypatch):
         rules_data = tomllib.load(f)
 
     # Load and sort rules just like the real config loader does.
-    rules_config = [RuleConfig(**r) for r in rules_data.get("rules", [])]
+    rules_config = []
+    for rule_data in rules_data.get("rules", []):
+        # Manually construct RuleConfig to handle pattern/patterns compatibility
+        patterns_value = rule_data.get("patterns", rule_data.get("pattern", ""))
+        pattern_value = patterns_value if isinstance(patterns_value, str) else None
+        
+        rule = RuleConfig(
+            priority=rule_data.get("priority", 0),
+            major_category=rule_data.get("major_category", ""),
+            category=rule_data.get("category", ""),
+            match_field=rule_data.get("match_field", ""),
+            match_type=rule_data.get("match_type", ""),
+            patterns=patterns_value,
+            pattern=pattern_value,
+            comment=rule_data.get("comment", "")
+        )
+        rules_config.append(rule)
+    
     rules_config.sort(key=lambda r: r.priority, reverse=True)
 
     # Create a minimal, mock AppConfig. We only need the 'rules' part to be real.

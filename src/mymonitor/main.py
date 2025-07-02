@@ -12,7 +12,7 @@ from .monitor_utils import BuildRunner
 from .process_utils import (
     check_pidstat_installed,
 )
-from .data_models import handle_cli_error
+from .data_models import handle_cli_error, ValidationError, validate_jobs_list, validate_project_name
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -77,20 +77,43 @@ def main_cli():
     args = parser.parse_args()
 
     if args.project:
-        projects_to_run = [p for p in app_config.projects if p.name == args.project]
+        # Validate project name format first
+        try:
+            validated_project_name = validate_project_name(
+                args.project,
+                field_name="--project argument"
+            )
+        except ValidationError as e:
+            handle_cli_error(
+                error=e,
+                context="project name validation",
+                exit_code=1,
+                include_traceback=False,
+                logger=logger
+            )
+        
+        # Check if project exists in configuration
+        projects_to_run = [p for p in app_config.projects if p.name == validated_project_name]
         if not projects_to_run:
-            logger.error(f"Project '{args.project}' not found in configuration.")
+            available_projects = [p.name for p in app_config.projects]
+            logger.error(f"Project '{validated_project_name}' not found in configuration.")
+            logger.info(f"Available projects: {', '.join(available_projects)}")
             sys.exit(1)
     else:
         projects_to_run = app_config.projects
 
     if args.jobs:
         try:
-            jobs_to_run = [int(j.strip()) for j in args.jobs.split(",")]
-        except ValueError as e:
+            jobs_to_run = validate_jobs_list(
+                args.jobs,
+                min_jobs=1,
+                max_jobs=1024,  # Reasonable upper limit
+                field_name="--jobs argument"
+            )
+        except ValidationError as e:
             handle_cli_error(
                 error=e,
-                context=f"parsing --jobs argument '{args.jobs}'",
+                context="jobs argument validation",
                 exit_code=1,
                 include_traceback=False,
                 logger=logger
