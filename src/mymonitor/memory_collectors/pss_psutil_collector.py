@@ -11,6 +11,7 @@ import logging
 import os
 import psutil
 import re
+import threading
 import time
 from typing import List, Iterable, Optional
 
@@ -32,7 +33,9 @@ class PssPsutilCollector(AbstractMemoryCollector):
         PSUTIL_METRIC_FIELDS: A list of metric field names provided by this collector.
         compiled_pattern: The compiled regular expression for matching processes.
         _collecting: A boolean flag indicating if the collector is currently active.
-        _stop_event: A boolean flag used to signal the collection loop to stop gracefully.
+        _stop_event: A threading.Event used to signal the collection loop to stop gracefully.
+        _collector_lock: A threading lock for thread-safe state management.
+        _collection_thread: Optional reference to the collection thread for monitoring.
     """
 
     PSUTIL_METRIC_FIELDS: List[str] = ["PSS_KB", "USS_KB", "RSS_KB"]
@@ -46,37 +49,17 @@ class PssPsutilCollector(AbstractMemoryCollector):
         **kwargs,
     ):
         """
-        Initializes the PssPsutilCollector.
+        Initializes the PssPsutilCollector with enhanced thread safety.
 
         Args:
-            process_pattern: A regex pattern to match against process names or command lines.
-            monitoring_interval: The interval in seconds between sampling attempts.
-            mode: The mode of operation for the collector, either 'full_scan' or 'descendants_only'.
-            **kwargs: Additional keyword arguments (currently not used by this collector).
-
-        Raises:
-            ValueError: If the provided `process_pattern` is an invalid regular expression.
+            process_pattern: Regex pattern to match processes.
+            monitoring_interval: Sampling interval in seconds.
+            mode: Collection mode - "full_scan" or "descendants_only".
+            **kwargs: Additional arguments passed to the base class.
         """
         super().__init__(process_pattern, monitoring_interval, **kwargs)
-        # This list tells psutil.process_iter which process attributes to pre-fetch
-        # for performance. These are the attributes needed by _get_sample_for_process.
-        self._iter_attrs = ["pid", "name", "cmdline"]
 
-        # Store the main build process PID for the optimization.
-        # Note: build_process_pid is now consistently int type in the base class
-        self.build_process_pid: Optional[int] = kwargs.get("build_process_pid")
-        # Ensure we have the correct type - convert if needed for backward compatibility
-        if self.build_process_pid is not None and isinstance(self.build_process_pid, str):
-            try:
-                self.build_process_pid = int(self.build_process_pid)
-            except ValueError:
-                logger.warning(f"Invalid PID format: {self.build_process_pid}, setting to None")
-                self.build_process_pid = None
-        
-        self._collecting: bool = False
-        """Flag to indicate if the collector's main loop should be running."""
-        self._stop_event: bool = False
-        """Event flag to signal the sampling loop to terminate gracefully."""
+        # --- Execution mode configuration ---
         self.mode = mode
         if self.mode not in ["full_scan", "descendants_only"]:
             raise ValueError(f"Invalid PssPsutilCollector mode: {self.mode}")
@@ -94,6 +77,28 @@ class PssPsutilCollector(AbstractMemoryCollector):
                 f"Invalid regular expression pattern: {process_pattern}"
             ) from e
 
+        # --- Enhanced thread safety and state management ---
+        self._collecting = False
+        self._stop_event = threading.Event()
+        self._collector_lock = threading.RLock()  # Reentrant lock for nested calls
+        self._collection_thread: Optional[threading.Thread] = None
+        self._start_time: Optional[float] = None
+
+        # This list tells psutil.process_iter which process attributes to pre-fetch
+        # for performance. These are the attributes needed by _get_sample_for_process.
+        self._iter_attrs = ["pid", "name", "cmdline"]
+
+        # Store the main build process PID for the optimization.
+        # Note: build_process_pid is now consistently int type in the base class
+        self.build_process_pid: Optional[int] = kwargs.get("build_process_pid")
+        # Ensure we have the correct type - convert if needed for backward compatibility
+        if self.build_process_pid is not None and isinstance(self.build_process_pid, str):
+            try:
+                self.build_process_pid = int(self.build_process_pid)
+            except ValueError:
+                logger.warning(f"Invalid PID format: {self.build_process_pid}, ignoring")
+                self.build_process_pid = None
+
     def get_metric_fields(self) -> List[str]:
         """
         Returns the list of memory metric field names provided by this collector.
@@ -109,25 +114,92 @@ class PssPsutilCollector(AbstractMemoryCollector):
 
     def start(self) -> None:
         """
-        Starts the memory collection process.
+        Starts the memory collection process with thread-safe state management.
 
-        Sets internal flags to enable the `read_samples` loop.
+        Sets internal flags to enable the `read_samples` loop and initializes timing.
+        
+        Raises:
+            RuntimeError: If the collector is already running.
         """
-        logger.info(
-            f"Starting PssPsutilCollector (pattern: '{self.process_pattern}', interval: {self.monitoring_interval}s)."
-        )
-        self._collecting = True
-        self._stop_event = False  # Reset stop event in case of restart.
+        with self._collector_lock:
+            if self._collecting:
+                raise RuntimeError("PssPsutilCollector is already running")
+                
+            logger.info(
+                f"Starting PssPsutilCollector (pattern: '{self.process_pattern}', "
+                f"interval: {self.monitoring_interval}s, mode: {self.mode})."
+            )
+            self._collecting = True
+            self._stop_event.clear()  # Reset stop event in case of restart.
+            self._start_time = time.monotonic()
 
-    def stop(self) -> None:
+    def stop(self, timeout: float = 10.0) -> bool:
         """
-        Stops the memory collection process.
+        Stops the memory collection process with enhanced safety and timeout.
 
-        Sets internal flags to signal the `read_samples` loop to terminate.
+        Sets internal flags to signal the `read_samples` loop to terminate and
+        optionally waits for the collection to actually stop.
+
+        Args:
+            timeout: Maximum time to wait for the collection loop to stop (seconds).
+                    If 0, returns immediately without waiting.
+
+        Returns:
+            True if the collector stopped successfully within the timeout,
+            False if timeout was reached or no collection was running.
         """
-        logger.info("Stopping PssPsutilCollector.")
-        self._collecting = False  # Indicate that collection should not proceed.
-        self._stop_event = True  # Signal the loop in read_samples to exit.
+        with self._collector_lock:
+            if not self._collecting:
+                logger.debug("PssPsutilCollector was not running")
+                return True
+
+            logger.info(f"Stopping PssPsutilCollector (timeout: {timeout}s)")
+            
+            # Set stop signals
+            self._collecting = False  # Indicate that collection should not proceed.
+            self._stop_event.set()  # Signal the loop in read_samples to exit.
+            
+            # Record stop time for statistics
+            stop_time = time.monotonic()
+            if self._start_time:
+                runtime = stop_time - self._start_time
+                logger.info(f"PssPsutilCollector ran for {runtime:.2f} seconds")
+
+        # Wait for collection to actually stop (outside of lock to avoid deadlock)
+        if timeout > 0:
+            return self._wait_for_stop(timeout)
+        else:
+            return True  # Immediate return requested
+
+    def _wait_for_stop(self, timeout: float) -> bool:
+        """
+        Wait for the collection loop to actually stop.
+        
+        Args:
+            timeout: Maximum time to wait in seconds.
+            
+        Returns:
+            True if collection stopped, False if timeout reached.
+        """
+        start_wait = time.monotonic()
+        check_interval = min(0.1, timeout / 10)  # Check every 100ms or 10% of timeout
+        
+        while time.monotonic() - start_wait < timeout:
+            with self._collector_lock:
+                # Check if collection has actually stopped
+                # We consider it stopped if _collecting is False and we're not in a sampling iteration
+                if not self._collecting and not self._stop_event.is_set():
+                    logger.debug("Collection confirmed stopped")
+                    return True
+                elif not self._collecting:
+                    # Still in the process of stopping
+                    logger.debug("Collection stopping in progress...")
+                    
+            time.sleep(check_interval)
+        
+        # Timeout reached
+        logger.warning(f"Timeout waiting for PssPsutilCollector to stop after {timeout}s")
+        return False
 
     def _get_sample_for_process(
         self, proc: psutil.Process
@@ -257,7 +329,7 @@ class PssPsutilCollector(AbstractMemoryCollector):
 
                 processes_scanned = 0
                 for proc in psutil.process_iter(self._iter_attrs):
-                    if self._stop_event:
+                    if self._stop_event.is_set():
                         break
                     processes_scanned += 1
                     sample = self._get_sample_for_process(proc)
@@ -284,7 +356,7 @@ class PssPsutilCollector(AbstractMemoryCollector):
             yield current_interval_samples
 
             # Now, check if we should exit the main loop AFTER yielding data.
-            if self._stop_event:
+            if self._stop_event.is_set():
                 logger.info(f"Stop event received, exiting after {iteration_count} iterations")
                 break
 
@@ -297,7 +369,7 @@ class PssPsutilCollector(AbstractMemoryCollector):
                 chunk_sleep = 0.05  # Check for stop event frequently.
                 sleep_end_time = time.monotonic() + sleep_time
                 while time.monotonic() < sleep_end_time:
-                    if self._stop_event:
+                    if self._stop_event.is_set():
                         break
                     # Sleep for a short chunk or the remaining time, whichever is smaller.
                     time.sleep(min(chunk_sleep, sleep_end_time - time.monotonic()))
@@ -308,3 +380,9 @@ class PssPsutilCollector(AbstractMemoryCollector):
                 )
 
         logger.info(f"PssPsutilCollector sample reading loop has finished after {iteration_count} iterations.")
+        
+        # Clear the stop event to indicate we've finished stopping
+        # This allows _wait_for_stop() to detect completion
+        with self._collector_lock:
+            self._stop_event.clear()
+            logger.debug("Stop event cleared - collection fully stopped")

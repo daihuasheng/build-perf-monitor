@@ -85,12 +85,20 @@ class AbstractMemoryCollector(ABC):
         pass
 
     @abstractmethod
-    def stop(self) -> None:
+    def stop(self, timeout: float = 10.0) -> bool:
         """
         Stops the memory collection process and cleans up any resources.
 
         This method should ensure that any running subprocesses are terminated
         and any open resources (like file handles) are closed.
+        
+        Args:
+            timeout: Maximum time to wait for the collection process to stop cleanly (seconds).
+                    If 0, returns immediately without waiting.
+                    
+        Returns:
+            True if the collector stopped successfully within the timeout,
+            False if there were issues or timeout was reached.
         """
         pass
 

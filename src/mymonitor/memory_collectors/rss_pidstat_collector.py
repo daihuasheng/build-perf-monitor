@@ -9,6 +9,8 @@ and VSZ (Virtual Set Size) for processes matching a specified pattern.
 import logging
 import os
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import (
     List,
@@ -40,6 +42,9 @@ class RssPidstatCollector(AbstractMemoryCollector):
         pidstat_stderr_file: Optional path to a file where pidstat's stderr output
                              will be redirected.
         _pidstat_stderr_handle: Optional file handle for the pidstat_stderr_file.
+        _stop_lock: Threading lock for safe stop operations.
+        _is_stopping: Flag to prevent multiple concurrent stop calls.
+        _start_time: Timestamp when the collector was started.
     """
 
     PIDSTAT_METRIC_FIELDS: List[str] = ["RSS_KB", "VSZ_KB"]
@@ -47,15 +52,12 @@ class RssPidstatCollector(AbstractMemoryCollector):
 
     def __init__(self, process_pattern: str, monitoring_interval: float, **kwargs):
         """
-        Initializes the RssPidstatCollector.
+        Initializes the RssPidstatCollector with enhanced thread safety.
 
         Args:
-            process_pattern: A regex pattern passed to `pidstat -C` to match
-                             process command names.
-            monitoring_interval: The interval in seconds for `pidstat` to report.
-            **kwargs: Additional keyword arguments.
-                      Expected: "pidstat_stderr_file" (Optional[Path]) for redirecting
-                      pidstat's stderr.
+            process_pattern: A regex pattern to match processes.
+            monitoring_interval: Time interval between pidstat reports.
+            **kwargs: Additional keyword arguments, including 'pidstat_stderr_file'.
         """
         super().__init__(process_pattern, monitoring_interval, **kwargs)
         self.pidstat_proc: Optional[subprocess.Popen] = None
@@ -66,6 +68,11 @@ class RssPidstatCollector(AbstractMemoryCollector):
             None  # Type hint for file handle
         )
         """File handle for the `pidstat_stderr_file` if provided."""
+        
+        # Enhanced thread safety and state management
+        self._stop_lock = threading.Lock()
+        self._is_stopping = False
+        self._start_time: Optional[float] = None
 
     def get_metric_fields(self) -> List[str]:
         """
@@ -89,142 +96,185 @@ class RssPidstatCollector(AbstractMemoryCollector):
         consistent output formatting, which is crucial for parsing.
 
         Raises:
-            RuntimeError: If `pidstat` fails to start.
+            RuntimeError: If `pidstat` fails to start or is already running.
         """
-        pidstat_base_cmd: List[str] = [
-            "pidstat",
-            "-r",
-            "-l",
-            "-C",
-            self.process_pattern,
-            str(self.monitoring_interval),
-        ]
+        with self._stop_lock:
+            if self.pidstat_proc is not None:
+                raise RuntimeError("RssPidstatCollector is already running")
+                
+            pidstat_base_cmd: List[str] = [
+                "pidstat",
+                "-r",
+                "-l",
+                "-C",
+                self.process_pattern,
+                str(self.monitoring_interval),
+            ]
 
-        pidstat_cmd_final: List[str] = []
-        pidstat_prefix_str = ""
+            pidstat_cmd_final: List[str] = []
+            pidstat_prefix_str = ""
 
-        if self.collector_cpu_core is not None and self.taskset_available:
-            try:
-                # Validate core ID against available cores if possible, though psutil might not be imported here.
-                # For simplicity, assume core ID is valid if provided.
-                pidstat_cmd_final.extend(
-                    ["taskset", "-c", str(self.collector_cpu_core)]
-                )
-                pidstat_prefix_str = f"taskset -c {self.collector_cpu_core} "
-                logger.info(
-                    f"Will attempt to pin pidstat to CPU core {self.collector_cpu_core} using taskset."
-                )
-            except Exception as e:  # Should not happen with simple string conversion
-                logger.warning(
-                    f"Could not form taskset prefix for pidstat: {e}. Pidstat will not be pinned."
-                )
+            if self.collector_cpu_core is not None and self.taskset_available:
+                try:
+                    # Validate core ID against available cores if possible, though psutil might not be imported here.
+                    # For simplicity, assume core ID is valid if provided.
+                    pidstat_cmd_final.extend(
+                        ["taskset", "-c", str(self.collector_cpu_core)]
+                    )
+                    pidstat_prefix_str = f"taskset -c {self.collector_cpu_core} "
+                    logger.info(
+                        f"Will attempt to pin pidstat to CPU core {self.collector_cpu_core} using taskset."
+                    )
+                except Exception as e:  # Should not happen with simple string conversion
+                    logger.warning(
+                        f"Could not form taskset prefix for pidstat: {e}. Pidstat will not be pinned."
+                    )
 
-        pidstat_cmd_final.extend(pidstat_base_cmd)
+            pidstat_cmd_final.extend(pidstat_base_cmd)
 
-        pidstat_env = os.environ.copy()
-        pidstat_env["LC_ALL"] = "C"
+            pidstat_env = os.environ.copy()
+            pidstat_env["LC_ALL"] = "C"
 
-        stderr_dest: Optional[Union[int, IO[Any]]] = None  # Default to None
-        if self.pidstat_stderr_file:
-            try:
-                # Open the stderr log file in write mode.
-                self._pidstat_stderr_handle = open(self.pidstat_stderr_file, "w")
-                stderr_dest = self._pidstat_stderr_handle
-                logger.info(
-                    f"pidstat stderr will be redirected to: {self.pidstat_stderr_file}"
-                )
-            except IOError as e:
-                logger.error(
-                    f"Failed to open pidstat_stderr_file {self.pidstat_stderr_file}: {e}. Stderr will not be captured to file."
-                )
-                stderr_dest = subprocess.DEVNULL  # Fallback if file opening fails
-        else:
-            # If no specific file is provided, discard stderr to prevent pipe buffer issues.
-            stderr_dest = subprocess.DEVNULL
+            stderr_dest: Optional[Union[int, IO[Any]]] = None  # Default to None
+            if self.pidstat_stderr_file:
+                try:
+                    # Open the stderr log file in write mode.
+                    self._pidstat_stderr_handle = open(self.pidstat_stderr_file, "w")
+                    stderr_dest = self._pidstat_stderr_handle
+                    logger.info(
+                        f"pidstat stderr will be redirected to: {self.pidstat_stderr_file}"
+                    )
+                except IOError as e:
+                    logger.error(
+                        f"Failed to open pidstat_stderr_file {self.pidstat_stderr_file}: {e}. Stderr will not be captured to file."
+                    )
+                    stderr_dest = subprocess.DEVNULL  # Fallback if file opening fails
+            else:
+                # If no specific file is provided, discard stderr to prevent pipe buffer issues.
+                stderr_dest = subprocess.DEVNULL
 
-        logger.info(
-            f"Starting pidstat collector with command: {' '.join(pidstat_cmd_final)}"
-        )
-        try:
-            self.pidstat_proc = subprocess.Popen(
-                pidstat_cmd_final,  # Use the potentially prefixed command
-                stdout=subprocess.PIPE,  # Capture stdout for parsing.
-                stderr=stderr_dest,  # Redirect stderr as configured.
-                text=True,  # Decode output as text.
-                bufsize=1,  # Line-buffered to get output as it comes.
-                env=pidstat_env,  # Use the modified environment.
-            )
             logger.info(
-                f"pidstat process started (PID: {self.pidstat_proc.pid}). Command: '{pidstat_prefix_str}{' '.join(pidstat_base_cmd)}'"
+                f"Starting pidstat collector with command: {' '.join(pidstat_cmd_final)}"
             )
-        except Exception as e:
-            logger.error(f"Failed to start pidstat: {e}", exc_info=True)
-            if self._pidstat_stderr_handle:
-                self._pidstat_stderr_handle.close()
-                self._pidstat_stderr_handle = None  # Reset handle
-            # Re-raise as a RuntimeError to indicate a critical failure.
-            raise RuntimeError(f"Failed to start pidstat process: {e}") from e
+            try:
+                self.pidstat_proc = subprocess.Popen(
+                    pidstat_cmd_final,  # Use the potentially prefixed command
+                    stdout=subprocess.PIPE,  # Capture stdout for parsing.
+                    stderr=stderr_dest,  # Redirect stderr as configured.
+                    text=True,  # Decode output as text.
+                    bufsize=1,  # Line-buffered to get output as it comes.
+                    env=pidstat_env,  # Use the modified environment.
+                )
+                self._start_time = time.monotonic()  # Record start time
+                logger.info(
+                    f"pidstat process started (PID: {self.pidstat_proc.pid}). Command: '{pidstat_prefix_str}{' '.join(pidstat_base_cmd)}'"
+                )
+            except Exception as e:
+                logger.error(f"Failed to start pidstat: {e}", exc_info=True)
+                if self._pidstat_stderr_handle:
+                    self._pidstat_stderr_handle.close()
+                    self._pidstat_stderr_handle = None  # Reset handle
+                # Re-raise as a RuntimeError to indicate a critical failure.
+                raise RuntimeError(f"Failed to start pidstat process: {e}") from e
 
-    def stop(self) -> None:
+    def stop(self, timeout: float = 10.0) -> bool:
         """
-        Stops the `pidstat` subprocess and cleans up resources.
+        Stops the `pidstat` subprocess and cleans up resources with enhanced safety.
 
         Terminates the `pidstat` process gracefully (SIGTERM), with a fallback
         to SIGKILL if it doesn't terminate within a timeout.
         Closes the stderr file handle if it was opened.
-        """
-        # 首先清理文件句柄，避免在进程终止过程中出现问题
-        if self._pidstat_stderr_handle:
-            try:
-                self._pidstat_stderr_handle.close()
-                logger.info(f"Closed pidstat stderr file: {self.pidstat_stderr_file}")
-            except IOError as e:
-                logger.error(
-                    f"Error closing pidstat stderr file {self.pidstat_stderr_file}: {e}"
-                )
-            finally:
-                self._pidstat_stderr_handle = None  # 确保句柄被重置
-
-        # 然后处理进程终止
-        if (
-            self.pidstat_proc and self.pidstat_proc.poll() is None
-        ):  # Check if process is running.
-            logger.info(f"Stopping pidstat process (PID: {self.pidstat_proc.pid})...")
+        
+        Args:
+            timeout: Maximum time to wait for pidstat to terminate gracefully.
             
-            try:
-                # 首先尝试优雅终止
-                self.pidstat_proc.terminate()  # Send SIGTERM for graceful shutdown.
-                try:
-                    self.pidstat_proc.wait(timeout=5)  # Wait up to 5 seconds.
-                    logger.info(
-                        f"pidstat process (PID: {self.pidstat_proc.pid}) terminated gracefully."
-                    )
-                except subprocess.TimeoutExpired:
-                    logger.warning(
-                        f"pidstat process (PID: {self.pidstat_proc.pid}) did not terminate gracefully, killing..."
-                    )
-                    # 强制终止
-                    self.pidstat_proc.kill()  # Force kill if terminate fails.
-                    try:
-                        self.pidstat_proc.wait(timeout=2)  # 等待强制终止完成
-                    except subprocess.TimeoutExpired:
-                        logger.error(f"Failed to kill pidstat process (PID: {self.pidstat_proc.pid})")
-                        
-            except Exception as e:  # Catch other potential errors during termination.
-                logger.error(f"Error during pidstat stop/wait: {e}", exc_info=True)
-                # 即使出现异常，也要尝试强制终止
-                try:
-                    if self.pidstat_proc.poll() is None:
-                        self.pidstat_proc.kill()
-                        self.pidstat_proc.wait(timeout=1)
-                except Exception:
-                    pass  # 最后的尝试，忽略所有异常
-            finally:
-                self.pidstat_proc = None  # 确保进程对象被清理
-        else:
-            logger.info("pidstat process was not running or already stopped.")
+        Returns:
+            True if stopped successfully, False if there were issues.
+        """
+        with self._stop_lock:
+            # Prevent multiple concurrent stop calls
+            if self._is_stopping:
+                logger.debug("Stop already in progress for RssPidstatCollector")
+                return True
+                
+            if self.pidstat_proc is None:
+                logger.debug("RssPidstatCollector was not running")
+                return True
+                
+            self._is_stopping = True
 
-        logger.info("RssPidstatCollector stopped.")
+        stop_success = True
+        stop_time = time.monotonic()
+
+        # Record runtime statistics
+        if self._start_time:
+            runtime = stop_time - self._start_time
+            logger.info(f"RssPidstatCollector ran for {runtime:.2f} seconds")
+
+        try:
+            # 首先清理文件句柄，避免在进程终止过程中出现问题
+            if self._pidstat_stderr_handle:
+                try:
+                    self._pidstat_stderr_handle.close()
+                    logger.debug(f"Closed pidstat stderr file: {self.pidstat_stderr_file}")
+                except IOError as e:
+                    logger.error(
+                        f"Error closing pidstat stderr file {self.pidstat_stderr_file}: {e}"
+                    )
+                    stop_success = False
+                finally:
+                    self._pidstat_stderr_handle = None  # 确保句柄被重置
+
+            # 然后处理进程终止
+            if self.pidstat_proc and self.pidstat_proc.poll() is None:  # Check if process is running.
+                logger.info(f"Stopping pidstat process (PID: {self.pidstat_proc.pid})...")
+                
+                try:
+                    # 首先尝试优雅终止
+                    self.pidstat_proc.terminate()  # Send SIGTERM for graceful shutdown.
+                    try:
+                        self.pidstat_proc.wait(timeout=timeout)  # Wait up to specified timeout.
+                        logger.info(
+                            f"pidstat process (PID: {self.pidstat_proc.pid}) terminated gracefully."
+                        )
+                    except subprocess.TimeoutExpired:
+                        logger.warning(
+                            f"pidstat process (PID: {self.pidstat_proc.pid}) did not terminate gracefully within {timeout}s, killing..."
+                        )
+                        # 强制终止
+                        self.pidstat_proc.kill()  # Force kill if terminate fails.
+                        try:
+                            self.pidstat_proc.wait(timeout=2)  # 等待强制终止完成
+                            logger.info("pidstat process killed successfully")
+                        except subprocess.TimeoutExpired:
+                            logger.error(f"Failed to kill pidstat process (PID: {self.pidstat_proc.pid})")
+                            stop_success = False
+                            
+                except Exception as e:  # Catch other potential errors during termination.
+                    logger.error(f"Error during pidstat stop/wait: {e}", exc_info=True)
+                    stop_success = False
+                    # 即使出现异常，也要尝试强制终止
+                    try:
+                        if self.pidstat_proc.poll() is None:
+                            self.pidstat_proc.kill()
+                            self.pidstat_proc.wait(timeout=1)
+                    except Exception:
+                        pass  # 最后的尝试，忽略所有异常
+            else:
+                logger.debug("pidstat process was not running or already stopped.")
+
+        finally:
+            # 确保状态被正确重置
+            with self._stop_lock:
+                self.pidstat_proc = None  # 确保进程对象被清理
+                self._is_stopping = False  # 重置停止标志
+
+        if stop_success:
+            logger.info("RssPidstatCollector stopped successfully.")
+        else:
+            logger.warning("RssPidstatCollector stopped with some issues.")
+            
+        return stop_success
 
     def read_samples(self) -> Iterable[List[ProcessMemorySample]]:
         """

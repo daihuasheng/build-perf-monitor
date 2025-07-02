@@ -331,7 +331,12 @@ class BuildRunner:
         """
         logger.info("Tearing down monitoring resources...")
         if self.collector:
-            self.collector.stop()  # Explicitly stop the collector
+            try:
+                stop_success = self.collector.stop(timeout=5.0)  # 5 second timeout for teardown
+                if not stop_success:
+                    logger.warning("Collector did not stop cleanly during teardown")
+            except Exception as e:
+                logger.error(f"Error stopping collector during teardown: {e}")
 
         if self.producer_thread and self.producer_thread.is_alive():
             self.producer_thread.join(timeout=5)
@@ -558,7 +563,13 @@ class BuildRunner:
 
         if self.collector:
             logger.info("Stopping collector to signal producer thread to finish...")
-            self.collector.stop()
+            try:
+                stop_success = self.collector.stop(timeout=8.0)  # Give more time during normal operation
+                if not stop_success:
+                    logger.warning("Collector did not stop cleanly, but continuing with shutdown")
+            except Exception as e:
+                logger.error(f"Error stopping collector: {e}")
+                # Continue with shutdown even if collector stop failed
 
         if self.producer_thread:
             logger.info("Waiting for producer thread to finish...")
