@@ -173,27 +173,7 @@ class RssPidstatCollector(AbstractMemoryCollector):
         to SIGKILL if it doesn't terminate within a timeout.
         Closes the stderr file handle if it was opened.
         """
-        if (
-            self.pidstat_proc and self.pidstat_proc.poll() is None
-        ):  # Check if process is running.
-            logger.info(f"Stopping pidstat process (PID: {self.pidstat_proc.pid})...")
-            self.pidstat_proc.terminate()  # Send SIGTERM for graceful shutdown.
-            try:
-                self.pidstat_proc.wait(timeout=5)  # Wait up to 5 seconds.
-                logger.info(
-                    f"pidstat process (PID: {self.pidstat_proc.pid}) terminated."
-                )
-            except subprocess.TimeoutExpired:
-                logger.warning(
-                    f"pidstat process (PID: {self.pidstat_proc.pid}) did not terminate gracefully, killing..."
-                )
-                self.pidstat_proc.kill()  # Force kill if terminate fails.
-            except Exception as e:  # Catch other potential errors during wait.
-                logger.error(f"Error during pidstat stop/wait: {e}", exc_info=True)
-            self.pidstat_proc = None  # Clear the process attribute.
-        else:
-            logger.info("pidstat process was not running or already stopped.")
-
+        # 首先清理文件句柄，避免在进程终止过程中出现问题
         if self._pidstat_stderr_handle:
             try:
                 self._pidstat_stderr_handle.close()
@@ -202,7 +182,48 @@ class RssPidstatCollector(AbstractMemoryCollector):
                 logger.error(
                     f"Error closing pidstat stderr file {self.pidstat_stderr_file}: {e}"
                 )
-            self._pidstat_stderr_handle = None  # Reset handle.
+            finally:
+                self._pidstat_stderr_handle = None  # 确保句柄被重置
+
+        # 然后处理进程终止
+        if (
+            self.pidstat_proc and self.pidstat_proc.poll() is None
+        ):  # Check if process is running.
+            logger.info(f"Stopping pidstat process (PID: {self.pidstat_proc.pid})...")
+            
+            try:
+                # 首先尝试优雅终止
+                self.pidstat_proc.terminate()  # Send SIGTERM for graceful shutdown.
+                try:
+                    self.pidstat_proc.wait(timeout=5)  # Wait up to 5 seconds.
+                    logger.info(
+                        f"pidstat process (PID: {self.pidstat_proc.pid}) terminated gracefully."
+                    )
+                except subprocess.TimeoutExpired:
+                    logger.warning(
+                        f"pidstat process (PID: {self.pidstat_proc.pid}) did not terminate gracefully, killing..."
+                    )
+                    # 强制终止
+                    self.pidstat_proc.kill()  # Force kill if terminate fails.
+                    try:
+                        self.pidstat_proc.wait(timeout=2)  # 等待强制终止完成
+                    except subprocess.TimeoutExpired:
+                        logger.error(f"Failed to kill pidstat process (PID: {self.pidstat_proc.pid})")
+                        
+            except Exception as e:  # Catch other potential errors during termination.
+                logger.error(f"Error during pidstat stop/wait: {e}", exc_info=True)
+                # 即使出现异常，也要尝试强制终止
+                try:
+                    if self.pidstat_proc.poll() is None:
+                        self.pidstat_proc.kill()
+                        self.pidstat_proc.wait(timeout=1)
+                except:
+                    pass  # 最后的尝试，忽略所有异常
+            finally:
+                self.pidstat_proc = None  # 确保进程对象被清理
+        else:
+            logger.info("pidstat process was not running or already stopped.")
+
         logger.info("RssPidstatCollector stopped.")
 
     def read_samples(self) -> Iterable[List[ProcessMemorySample]]:

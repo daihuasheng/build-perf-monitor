@@ -529,38 +529,44 @@ class BuildRunner:
         final_category_peak_sum: Dict[str, float] = {}
         group_memory_snapshots = []
 
-        # Check output queue
+        # Check output queue - 修复竞态条件
         output_items_count = 0
         logger.info("Starting to process output queue...")
-        while not self.output_queue.empty():
-            worker_result = self.output_queue.get()
-            output_items_count += 1
-            logger.debug(f"Processing output item {output_items_count}")
-            
-            samples_in_result = len(worker_result.get("all_samples_data", []))
-            logger.debug(f"Output item {output_items_count} contains {samples_in_result} samples")
-            
-            all_samples_data.extend(worker_result.get("all_samples_data", []))
+        # 使用更安全的队列处理方式，避免竞态条件
+        while True:
+            try:
+                # 使用非阻塞get，避免empty()和get()之间的竞态条件
+                worker_result = self.output_queue.get(timeout=0.1)
+                output_items_count += 1
+                logger.debug(f"Processing output item {output_items_count}")
+                
+                samples_in_result = len(worker_result.get("all_samples_data", []))
+                logger.debug(f"Output item {output_items_count} contains {samples_in_result} samples")
+                
+                all_samples_data.extend(worker_result.get("all_samples_data", []))
 
-            # Aggregate category data from the worker
-            for cat, pids in worker_result.get("category_pid_set", {}).items():
-                if cat not in final_category_pid_set:
-                    final_category_pid_set[cat] = set()
-                final_category_pid_set[cat].update(pids)
+                # Aggregate category data from the worker
+                for cat, pids in worker_result.get("category_pid_set", {}).items():
+                    if cat not in final_category_pid_set:
+                        final_category_pid_set[cat] = set()
+                    final_category_pid_set[cat].update(pids)
 
-            for cat, peak_mem in worker_result.get("category_peak_sum", {}).items():
-                final_category_peak_sum[cat] = max(
-                    final_category_peak_sum.get(cat, 0.0), peak_mem
-                )
+                for cat, peak_mem in worker_result.get("category_peak_sum", {}).items():
+                    final_category_peak_sum[cat] = max(
+                        final_category_peak_sum.get(cat, 0.0), peak_mem
+                    )
 
-            # Collect the total memory snapshot for this time point
-            if "group_total_memory" in worker_result:
-                group_memory_snapshots.append(
-                    {
-                        "memory": worker_result["group_total_memory"],
-                        "timestamp": worker_result["timestamp"],
-                    }
-                )
+                # Collect the total memory snapshot for this time point
+                if "group_total_memory" in worker_result:
+                    group_memory_snapshots.append(
+                        {
+                            "memory": worker_result["group_total_memory"],
+                            "timestamp": worker_result["timestamp"],
+                        }
+                    )
+            except:
+                # 队列为空或超时，退出循环
+                break
 
         logger.info(f"Processed {output_items_count} output items from workers")
         logger.info(f"Total samples collected: {len(all_samples_data)}")
@@ -681,13 +687,40 @@ class BuildRunner:
             raise ValueError("RunContext not initialized.")
         paths = self.run_context.paths
         log_dir = paths.output_parquet_file.parent
-        self.log_files = {
-            "summary_log": open(paths.output_summary_log_file, "w", encoding="utf-8"),
-            "build_stdout": open(log_dir / "build_stdout.log", "w", encoding="utf-8"),
-            "build_stderr": open(log_dir / "build_stderr.log", "w", encoding="utf-8"),
-            "clean_log": open(log_dir / "clean.log", "w", encoding="utf-8"),
-            "metadata_log": open(log_dir / "metadata.log", "w", encoding="utf-8"),
-        }
+        
+        # 使用更安全的文件打开方式，避免文件描述符泄漏
+        opened_files = {}
+        try:
+            file_paths = {
+                "summary_log": paths.output_summary_log_file,
+                "build_stdout": log_dir / "build_stdout.log",
+                "build_stderr": log_dir / "build_stderr.log", 
+                "clean_log": log_dir / "clean.log",
+                "metadata_log": log_dir / "metadata.log",
+            }
+            
+            for name, path in file_paths.items():
+                try:
+                    opened_files[name] = open(path, "w", encoding="utf-8")
+                except Exception as e:
+                    logger.error(f"Failed to open {name} at {path}: {e}")
+                    # 关闭已打开的文件
+                    for f in opened_files.values():
+                        try:
+                            f.close()
+                        except:
+                            pass
+                    raise
+            
+            self.log_files = opened_files
+        except Exception:
+            # 确保所有已打开的文件都被关闭
+            for f in opened_files.values():
+                try:
+                    f.close()
+                except:
+                    pass
+            raise
 
     def _close_log_files(self) -> None:
         """Closes all opened log files."""
@@ -715,23 +748,52 @@ class BuildRunner:
         """Gracefully terminates a process and all its children."""
         try:
             parent = psutil.Process(pid)
-            children = parent.children(recursive=True)
-            procs_to_terminate = [parent] + children
-
-            logger.info(f"Terminating {name} (PID: {pid}) and its children...")
-            for p in procs_to_terminate:
+            
+            # 多次尝试获取和终止进程树，处理动态产生的子进程
+            max_attempts = 3
+            for attempt in range(max_attempts):
                 try:
-                    p.terminate()
-                except psutil.NoSuchProcess:
-                    continue  # Process already ended
+                    # 重新获取子进程列表，处理动态产生的子进程
+                    children = parent.children(recursive=True)
+                    procs_to_terminate = [parent] + children
+                    
+                    if attempt == 0:
+                        logger.info(f"Terminating {name} (PID: {pid}) and its {len(children)} children...")
+                    else:
+                        logger.info(f"Attempt {attempt + 1}: Found {len(children)} children to terminate")
 
-            _, alive = psutil.wait_procs(procs_to_terminate, timeout=3)
-            for p in alive:
-                logger.warning(f"Process {p.pid} did not terminate, killing it.")
-                try:
-                    p.kill()
+                    # 首先尝试优雅终止
+                    for p in procs_to_terminate:
+                        try:
+                            if p.is_running():
+                                p.terminate()
+                        except psutil.NoSuchProcess:
+                            continue  # Process already ended
+
+                    # 等待进程终止
+                    _, alive = psutil.wait_procs(procs_to_terminate, timeout=2)
+                    
+                    # 强制杀死仍然存活的进程
+                    if alive:
+                        logger.warning(f"Force killing {len(alive)} remaining processes")
+                        for p in alive:
+                            try:
+                                if p.is_running():
+                                    p.kill()
+                            except psutil.NoSuchProcess:
+                                continue  # Race condition: process ended before kill
+                        
+                        # 最后等待
+                        psutil.wait_procs(alive, timeout=1)
+                    
+                    # 检查是否还有新的子进程产生
+                    remaining_children = parent.children(recursive=True)
+                    if not remaining_children or attempt == max_attempts - 1:
+                        break
+                        
                 except psutil.NoSuchProcess:
-                    continue  # Race condition: process ended before kill
+                    # 父进程已经终止
+                    break
 
         except psutil.NoSuchProcess:
             logger.info(f"Process {name} (PID: {pid}) already terminated.")
