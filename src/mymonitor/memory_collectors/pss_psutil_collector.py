@@ -63,7 +63,9 @@ class PssPsutilCollector(AbstractMemoryCollector):
         self._iter_attrs = ["pid", "name", "cmdline"]
 
         # Store the main build process PID for the optimization.
-        self.build_process_pid: Optional[int] = kwargs.get("build_process_pid")
+        self.build_process_pid: Optional[str] = kwargs.get("build_process_pid")
+        if self.build_process_pid is not None and isinstance(self.build_process_pid, int):
+            self.build_process_pid = str(self.build_process_pid)  # 转换为字符串
         self._collecting: bool = False
         """Flag to indicate if the collector's main loop should be running."""
         self._stop_event: bool = False
@@ -222,7 +224,8 @@ class PssPsutilCollector(AbstractMemoryCollector):
                 # --- FAST PATH: Only scan descendants of the main build process ---
                 logger.debug(f"Using descendants_only mode for PID {self.build_process_pid}")
                 try:
-                    parent_proc = psutil.Process(self.build_process_pid)
+                    # 转换字符串PID为整数用于psutil.Process
+                    parent_proc = psutil.Process(int(self.build_process_pid))
                     descendants = list(parent_proc.children(recursive=True))
                     logger.debug(f"Found {len(descendants)} descendants of build process")
                     

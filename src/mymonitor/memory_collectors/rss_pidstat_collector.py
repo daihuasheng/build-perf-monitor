@@ -237,7 +237,30 @@ class RssPidstatCollector(AbstractMemoryCollector):
         # The logic here is to accumulate lines that look like data and yield them
         # when a line that is clearly *not* data (header, blank, average) is encountered.
 
-        for line in iter(self.pidstat_proc.stdout.readline, ""):  # Read until EOF.
+        # 添加非阻塞读取机制
+        import select
+        import sys
+        
+        while True:
+            # 检查进程是否还在运行
+            if self.pidstat_proc.poll() is not None:
+                logger.info("pidstat process has terminated, finishing read_samples")
+                break
+                
+            # 使用select进行非阻塞读取（仅在Unix系统上可用）
+            if hasattr(select, 'select') and sys.platform != 'win32':
+                ready, _, _ = select.select([self.pidstat_proc.stdout], [], [], 0.1)
+                if not ready:
+                    continue  # 没有数据可读，继续循环
+            
+            try:
+                line = self.pidstat_proc.stdout.readline()
+                if not line:  # EOF reached
+                    break
+            except Exception as e:
+                logger.warning(f"Error reading from pidstat stdout: {e}")
+                break
+                
             line = line.strip()
 
             # Skip blank lines, header lines, and average lines.
