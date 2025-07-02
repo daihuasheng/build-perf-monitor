@@ -63,9 +63,16 @@ class PssPsutilCollector(AbstractMemoryCollector):
         self._iter_attrs = ["pid", "name", "cmdline"]
 
         # Store the main build process PID for the optimization.
-        self.build_process_pid: Optional[str] = kwargs.get("build_process_pid")
-        if self.build_process_pid is not None and isinstance(self.build_process_pid, int):
-            self.build_process_pid = str(self.build_process_pid)  # 转换为字符串
+        # Note: build_process_pid is now consistently int type in the base class
+        self.build_process_pid: Optional[int] = kwargs.get("build_process_pid")
+        # Ensure we have the correct type - convert if needed for backward compatibility
+        if self.build_process_pid is not None and isinstance(self.build_process_pid, str):
+            try:
+                self.build_process_pid = int(self.build_process_pid)
+            except ValueError:
+                logger.warning(f"Invalid PID format: {self.build_process_pid}, setting to None")
+                self.build_process_pid = None
+        
         self._collecting: bool = False
         """Flag to indicate if the collector's main loop should be running."""
         self._stop_event: bool = False
@@ -224,8 +231,8 @@ class PssPsutilCollector(AbstractMemoryCollector):
                 # --- FAST PATH: Only scan descendants of the main build process ---
                 logger.debug(f"Using descendants_only mode for PID {self.build_process_pid}")
                 try:
-                    # 转换字符串PID为整数用于psutil.Process
-                    parent_proc = psutil.Process(int(self.build_process_pid))
+                    # build_process_pid is now consistently int type, no conversion needed
+                    parent_proc = psutil.Process(self.build_process_pid)
                     descendants = list(parent_proc.children(recursive=True))
                     logger.debug(f"Found {len(descendants)} descendants of build process")
                     

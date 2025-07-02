@@ -461,7 +461,7 @@ class BuildRunner:
         )
 
         # Set the build PID for the collector and start it
-        self.collector.build_process_pid = str(self.build_process.pid)
+        self.collector.build_process_pid = self.build_process.pid
         # Also update the RunContext with the build process PID
         self.run_context.build_process_pid = self.build_process.pid
         self.collector.start()
