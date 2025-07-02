@@ -241,6 +241,18 @@ def _plan_adaptive_allocation(
         cores_for_build = all_cores - monitor_worker_cores - {main_monitor_core}
         build_cores = cores_for_build
 
+    # --- 边界检查：确保构建进程至少有一个核心 ---
+    if not build_cores:
+        logger.warning(
+            f"No cores available for build process after allocation. "
+            f"Falling back to shared mode with all cores except monitor core {main_monitor_core}."
+        )
+        build_cores = all_cores - {main_monitor_core}
+        # 如果连这都不行，至少给构建进程一个核心
+        if not build_cores:
+            logger.warning("Extreme core scarcity: assigning all cores to build.")
+            build_cores = all_cores
+
     # --- Generate final plan object ---
     build_core_str = _format_core_set_to_str(build_cores)
     build_prefix = f"taskset -c {build_core_str} " if build_core_str else ""

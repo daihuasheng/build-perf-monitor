@@ -39,6 +39,8 @@ logger = logging.getLogger(__name__)
 # instance for graceful cleanup, as signal handlers in Python have a limited
 # signature and cannot be easily bound to class instances.
 current_runner: Optional["BuildRunner"] = None
+# 添加线程锁保护全局状态
+_current_runner_lock = threading.Lock()
 
 
 # This wrapper is necessary for multiprocessing.Pool to work correctly,
@@ -139,9 +141,11 @@ def cleanup_processes(*args: Any) -> None:
     Global cleanup function, triggered by signal handlers.
     This function should be very lightweight and only set a flag.
     """
-    if current_runner:
-        logger.warning("Shutdown signal received. Requesting graceful teardown.")
-        current_runner.shutdown_requested.set()
+    global current_runner
+    with _current_runner_lock:
+        if current_runner:
+            logger.warning("Shutdown signal received. Requesting graceful teardown.")
+            current_runner.shutdown_requested.set()
 
 
 class BuildRunner:
@@ -203,7 +207,8 @@ class BuildRunner:
         Executes the entire build and monitor lifecycle.
         """
         global current_runner
-        current_runner = self
+        with _current_runner_lock:
+            current_runner = self
         try:
             self.setup()
             if self.run_context:
@@ -213,7 +218,8 @@ class BuildRunner:
             logger.error(f"An error occurred during the run: {e}", exc_info=True)
         finally:
             self.teardown()
-            current_runner = None
+            with _current_runner_lock:
+                current_runner = None
 
     def setup(self) -> None:
         """
@@ -503,8 +509,13 @@ class BuildRunner:
         # Signal monitoring workers to terminate and wait for them
         if self.monitoring_worker_processes:
             logger.info("All data queued. Signaling monitoring workers to terminate.")
-            for _ in range(self.num_workers):
-                self.input_queue.put(None)
+            # 使用非阻塞方式发送终止信号，避免死锁
+            for i in range(self.num_workers):
+                try:
+                    self.input_queue.put(None, timeout=1.0)  # 使用超时避免无限阻塞
+                except:
+                    logger.warning(f"Failed to send termination signal to worker {i+1}, forcing termination")
+                    break
 
             # Wait for all worker processes to finish
             for process in self.monitoring_worker_processes:
@@ -538,8 +549,8 @@ class BuildRunner:
                 final_category_pid_set[cat].update(pids)
 
             for cat, peak_mem in worker_result.get("category_peak_sum", {}).items():
-                final_category_peak_sum[cat] = (
-                    final_category_peak_sum.get(cat, 0.0) + peak_mem
+                final_category_peak_sum[cat] = max(
+                    final_category_peak_sum.get(cat, 0.0), peak_mem
                 )
 
             # Collect the total memory snapshot for this time point
