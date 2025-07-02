@@ -29,146 +29,13 @@ import psutil
 
 # Local application imports
 from . import process_utils
-from .data_models import MonitoringResults, ProjectConfig, RunContext, RunPaths
+from .data_models import (
+    MonitoringResults, ProjectConfig, RunContext, RunPaths,
+    ErrorSeverity, handle_error, handle_file_error, handle_subprocess_error
+)
 from .memory_collectors.base import AbstractMemoryCollector
 
 logger = logging.getLogger(__name__)
-
-
-# --- Standardized Error Handling Utilities ---
-
-class ErrorSeverity:
-    """Define error severity levels for consistent error handling."""
-    CRITICAL = "critical"    # System failure, should exit
-    ERROR = "error"         # Operation failure, should log and potentially retry
-    WARNING = "warning"     # Unexpected but recoverable condition
-    DEBUG = "debug"         # Minor issue, for debugging purposes
-
-
-def handle_error(
-    error: Exception,
-    context: str,
-    severity: str = ErrorSeverity.ERROR,
-    include_traceback: bool = True,
-    reraise: bool = False,
-    fallback_value: Any = None
-) -> Any:
-    """
-    Standardized error handling function for consistent error processing.
-    
-    Args:
-        error: The caught exception
-        context: Description of what operation was being performed
-        severity: Error severity level (use ErrorSeverity constants)
-        include_traceback: Whether to include full traceback in logs
-        reraise: Whether to re-raise the exception after logging
-        fallback_value: Value to return if not re-raising
-        
-    Returns:
-        fallback_value if reraise=False, otherwise raises the exception
-        
-    Raises:
-        The original exception if reraise=True
-    """
-    # Map severity to log levels
-    severity_to_level = {
-        ErrorSeverity.CRITICAL: logging.CRITICAL,
-        ErrorSeverity.ERROR: logging.ERROR,
-        ErrorSeverity.WARNING: logging.WARNING,
-        ErrorSeverity.DEBUG: logging.DEBUG,
-    }
-    
-    log_level = severity_to_level.get(severity, logging.ERROR)
-    error_type = type(error).__name__
-    
-    # Create comprehensive error message
-    msg = f"{context}: {error_type}: {error}"
-    
-    # Log with appropriate level and traceback
-    logger.log(log_level, msg, exc_info=include_traceback)
-    
-    if reraise:
-        raise error
-    
-    return fallback_value
-
-
-def handle_file_error(
-    error: Exception,
-    file_path: Union[str, Path],
-    operation: str,
-    reraise: bool = True
-) -> Optional[bool]:
-    """
-    Specialized error handler for file operations.
-    
-    Args:
-        error: The file-related exception
-        file_path: Path to the file being operated on
-        operation: Description of the file operation (e.g., "reading", "writing")
-        reraise: Whether to re-raise the exception
-        
-    Returns:
-        None if reraise=True, False if reraise=False
-    """
-    context = f"File {operation} operation on '{file_path}'"
-    
-    # Classify common file errors
-    if isinstance(error, FileNotFoundError):
-        severity = ErrorSeverity.ERROR
-    elif isinstance(error, PermissionError):
-        severity = ErrorSeverity.ERROR
-    elif isinstance(error, OSError):
-        severity = ErrorSeverity.ERROR
-    else:
-        severity = ErrorSeverity.WARNING
-    
-    return handle_error(
-        error=error,
-        context=context,
-        severity=severity,
-        include_traceback=True,
-        reraise=reraise,
-        fallback_value=False
-    )
-
-
-def handle_subprocess_error(
-    error: Exception,
-    command: str,
-    reraise: bool = False
-) -> Optional[bool]:
-    """
-    Specialized error handler for subprocess operations.
-    
-    Args:
-        error: The subprocess-related exception
-        command: The command that was being executed
-        reraise: Whether to re-raise the exception
-        
-    Returns:
-        None if reraise=True, False if reraise=False
-    """
-    context = f"Subprocess execution of command '{command[:100]}...'"
-    
-    # Classify subprocess errors
-    if isinstance(error, subprocess.TimeoutExpired):
-        severity = ErrorSeverity.WARNING
-    elif isinstance(error, subprocess.CalledProcessError):
-        severity = ErrorSeverity.ERROR
-    elif isinstance(error, FileNotFoundError):
-        severity = ErrorSeverity.ERROR
-    else:
-        severity = ErrorSeverity.WARNING
-    
-    return handle_error(
-        error=error,
-        context=context,
-        severity=severity,
-        include_traceback=True,
-        reraise=reraise,
-        fallback_value=False
-    )
 
 # --- Signal Handling Infrastructure ---
 # Since signal handlers cannot be bound to class instances directly,
@@ -214,7 +81,8 @@ def _monitoring_worker_entry(
                 context=f"CPU core pinning to core {core_id}",
                 severity=ErrorSeverity.WARNING,
                 include_traceback=False,
-                reraise=False
+                reraise=False,
+                logger=logger
             )
 
     if not input_queue or not output_queue:
@@ -235,7 +103,8 @@ def _monitoring_worker_entry(
                 context="Worker queue get operation",
                 severity=ErrorSeverity.DEBUG,
                 include_traceback=False,
-                reraise=False
+                reraise=False,
+                logger=logger
             )
             continue
             
@@ -253,7 +122,8 @@ def _monitoring_worker_entry(
                         context="Worker sentinel propagation",
                         severity=ErrorSeverity.DEBUG,
                         include_traceback=False,
-                        reraise=False
+                        reraise=False,
+                        logger=logger
                     )
                 sentinel_seen = True
             break
@@ -313,7 +183,8 @@ def _monitoring_worker_entry(
                 context=f"Worker output queue put operation for group {processed_groups}",
                 severity=ErrorSeverity.WARNING,
                 include_traceback=False,
-                reraise=False
+                reraise=False,
+                logger=logger
             )
             # Continue processing even if one put fails
 
@@ -501,7 +372,8 @@ class BuildRunner:
                     context="Collector stop during teardown",
                     severity=ErrorSeverity.WARNING,
                     include_traceback=True,
-                    reraise=False
+                    reraise=False,
+                    logger=logger
                 )
 
         if self.producer_thread and self.producer_thread.is_alive():
@@ -739,7 +611,8 @@ class BuildRunner:
                     context="Collector stop during normal shutdown",
                     severity=ErrorSeverity.ERROR,
                     include_traceback=True,
-                    reraise=False
+                    reraise=False,
+                    logger=logger
                 )
                 # Continue with shutdown even if collector stop failed
 
@@ -766,7 +639,8 @@ class BuildRunner:
                         context=f"Sending termination signal to worker {i+1}",
                         severity=ErrorSeverity.WARNING,
                         include_traceback=False,
-                        reraise=False
+                        reraise=False,
+                        logger=logger
                     )
                     break
 
@@ -784,7 +658,8 @@ class BuildRunner:
                         context=f"Waiting for worker process {i+1} to finish",
                         severity=ErrorSeverity.WARNING,
                         include_traceback=False,
-                        reraise=False
+                        reraise=False,
+                        logger=logger
                     )
             
             # Set workers finished event
@@ -913,7 +788,8 @@ class BuildRunner:
                     context=f"Saving Parquet file to {self.run_context.paths.output_parquet_file}",
                     severity=ErrorSeverity.ERROR,
                     include_traceback=True,
-                    reraise=False
+                    reraise=False,
+                    logger=logger
                 )
 
     def _producer_loop(self) -> None:
@@ -952,7 +828,8 @@ class BuildRunner:
                         context=f"Producer queuing sample group {sample_count}",
                         severity=ErrorSeverity.WARNING,
                         include_traceback=False,
-                        reraise=False
+                        reraise=False,
+                        logger=logger
                     )
                     # Continue trying to process remaining samples
                     continue
@@ -963,7 +840,8 @@ class BuildRunner:
                 context="Producer sample collection loop",
                 severity=ErrorSeverity.ERROR,
                 include_traceback=True,
-                reraise=False
+                reraise=False,
+                logger=logger
             )
         finally:
             logger.info(f"Producer loop finished. Processed {sample_count} sample groups. All samples have been queued.")

@@ -12,6 +12,7 @@ from .monitor_utils import BuildRunner
 from .process_utils import (
     check_pidstat_installed,
 )
+from .data_models import handle_cli_error
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -24,27 +25,6 @@ logger = logging.getLogger(__name__)
 
 
 # --- Standardized Error Handling for Main ---
-
-def handle_cli_error(
-    error: Exception,
-    context: str,
-    exit_code: int = 1,
-    include_traceback: bool = True
-) -> None:
-    """
-    Standardized error handling for CLI operations.
-    
-    Args:
-        error: The caught exception
-        context: Description of what operation was being performed
-        exit_code: Exit code for sys.exit()
-        include_traceback: Whether to include full traceback in logs
-    """
-    error_type = type(error).__name__
-    msg = f"CLI {context}: {error_type}: {error}"
-    logger.error(msg, exc_info=include_traceback)
-    sys.exit(exit_code)
-
 
 def main_cli():
     """
@@ -69,7 +49,8 @@ def main_cli():
             error=e,
             context="configuration loading",
             exit_code=1,
-            include_traceback=True
+            include_traceback=True,
+            logger=logger
         )
 
     monitor_config = app_config.monitor
@@ -111,7 +92,8 @@ def main_cli():
                 error=e,
                 context=f"parsing --jobs argument '{args.jobs}'",
                 exit_code=1,
-                include_traceback=False
+                include_traceback=False,
+                logger=logger
             )
     else:
         jobs_to_run = monitor_config.default_jobs

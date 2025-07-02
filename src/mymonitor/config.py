@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import NoReturn, Optional, Union
 
 # Import the data models from the central location to ensure type safety.
-from .data_models import AppConfig, MonitorConfig, ProjectConfig, RuleConfig
+from .data_models import AppConfig, MonitorConfig, ProjectConfig, RuleConfig, ErrorSeverity, handle_config_error
 
 logger = logging.getLogger(__name__)
 
@@ -35,52 +35,7 @@ _CONFIG: Optional[AppConfig] = None
 # to load a different configuration.
 _CONFIG_FILE_PATH = Path(__file__).parent.parent.parent / "conf" / "config.toml"
 
-# --- Standardized Error Handling for Config ---
-
-class ConfigErrorSeverity:
-    """Error severity levels for configuration-specific errors."""
-    CRITICAL = "critical"    # Configuration failure, app cannot start
-    ERROR = "error"         # Configuration error, should fail
-    WARNING = "warning"     # Configuration issue, use defaults
-
-
-def handle_config_error(
-    error: Exception,
-    context: str,
-    severity: str = ConfigErrorSeverity.ERROR,
-    reraise: bool = True
-) -> Union[None, NoReturn]:
-    """
-    Standardized error handling for configuration operations.
-    
-    Args:
-        error: The caught exception
-        context: Description of what configuration operation was being performed
-        severity: Error severity level
-        reraise: Whether to re-raise the exception after logging
-        
-    Returns:
-        None if reraise=False, otherwise never returns (raises exception)
-    """
-    # Map severity to log levels
-    severity_to_level = {
-        ConfigErrorSeverity.CRITICAL: logging.CRITICAL,
-        ConfigErrorSeverity.ERROR: logging.ERROR,
-        ConfigErrorSeverity.WARNING: logging.WARNING,
-    }
-    
-    log_level = severity_to_level.get(severity, logging.ERROR)
-    error_type = type(error).__name__
-    
-    # Create comprehensive error message
-    msg = f"Configuration {context}: {error_type}: {error}"
-    
-    # Log with appropriate level and traceback
-    logger.log(log_level, msg, exc_info=True)
-    
-    if reraise:
-        raise error
-    return None
+# Configuration loading and management now uses centralized error handling from data_models
 
 
 def _load_config(config_path: Path) -> AppConfig:
@@ -202,16 +157,18 @@ def _load_config(config_path: Path) -> AppConfig:
         handle_config_error(
             error=e,
             context="loading configuration file",
-            severity=ConfigErrorSeverity.CRITICAL,
-            reraise=True
+            severity=ErrorSeverity.CRITICAL,
+            reraise=True,
+            logger=logger
         )
         raise  # Explicit re-raise for linter clarity
     except (tomllib.TOMLDecodeError, TypeError, KeyError) as e:
         handle_config_error(
             error=e,
             context="parsing configuration files",
-            severity=ConfigErrorSeverity.CRITICAL,
-            reraise=True
+            severity=ErrorSeverity.CRITICAL,
+            reraise=True,
+            logger=logger
         )
         raise  # Explicit re-raise for linter clarity
 

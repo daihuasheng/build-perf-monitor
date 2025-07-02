@@ -9,9 +9,10 @@ data reporting.
 """
 
 import dataclasses
+import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Union
 
 # --- Configuration Models ---
 # These models represent the static configuration loaded from TOML files.
@@ -175,3 +176,221 @@ class CpuAllocationPlan:
     build_cores_desc: str
     monitoring_cores: List[int]
     monitoring_cores_desc: str
+
+
+# --- Error Handling Models and Utilities ---
+# Centralized error handling infrastructure for consistent error management.
+
+
+class ErrorSeverity:
+    """Define error severity levels for consistent error handling across all modules."""
+    CRITICAL = "critical"    # System failure, should exit
+    ERROR = "error"         # Operation failure, should log and potentially retry
+    WARNING = "warning"     # Unexpected but recoverable condition
+    DEBUG = "debug"         # Minor issue, for debugging purposes
+
+
+def handle_error(
+    error: Exception,
+    context: str,
+    severity: str = ErrorSeverity.ERROR,
+    include_traceback: bool = True,
+    reraise: bool = False,
+    fallback_value: Any = None,
+    logger: Optional[logging.Logger] = None
+) -> Any:
+    """
+    Standardized error handling function for consistent error processing.
+    
+    Args:
+        error: The caught exception
+        context: Description of what operation was being performed
+        severity: Error severity level (use ErrorSeverity constants)
+        include_traceback: Whether to include full traceback in logs
+        reraise: Whether to re-raise the exception after logging
+        fallback_value: Value to return if not re-raising
+        logger: Optional logger instance; if None, uses root logger
+        
+    Returns:
+        fallback_value if reraise=False, otherwise raises the exception
+        
+    Raises:
+        The original exception if reraise=True
+    """
+    # Use provided logger or fall back to root logger
+    if logger is None:
+        logger = logging.getLogger(__name__)
+    
+    # Map severity to log levels
+    severity_to_level = {
+        ErrorSeverity.CRITICAL: logging.CRITICAL,
+        ErrorSeverity.ERROR: logging.ERROR,
+        ErrorSeverity.WARNING: logging.WARNING,
+        ErrorSeverity.DEBUG: logging.DEBUG,
+    }
+    
+    log_level = severity_to_level.get(severity, logging.ERROR)
+    error_type = type(error).__name__
+    
+    # Create comprehensive error message
+    msg = f"{context}: {error_type}: {error}"
+    
+    # Log with appropriate level and traceback
+    logger.log(log_level, msg, exc_info=include_traceback)
+    
+    if reraise:
+        raise error
+    
+    return fallback_value
+
+
+def handle_file_error(
+    error: Exception,
+    file_path: Union[str, Path],
+    operation: str,
+    reraise: bool = True,
+    logger: Optional[logging.Logger] = None
+) -> Optional[bool]:
+    """
+    Specialized error handler for file operations.
+    
+    Args:
+        error: The file-related exception
+        file_path: Path to the file being operated on
+        operation: Description of the file operation (e.g., "reading", "writing")
+        reraise: Whether to re-raise the exception
+        logger: Optional logger instance
+        
+    Returns:
+        None if reraise=True, False if reraise=False
+    """
+    context = f"File {operation} operation on '{file_path}'"
+    
+    # Classify common file errors
+    if isinstance(error, FileNotFoundError):
+        severity = ErrorSeverity.ERROR
+    elif isinstance(error, PermissionError):
+        severity = ErrorSeverity.ERROR
+    elif isinstance(error, OSError):
+        severity = ErrorSeverity.ERROR
+    else:
+        severity = ErrorSeverity.WARNING
+    
+    return handle_error(
+        error=error,
+        context=context,
+        severity=severity,
+        include_traceback=True,
+        reraise=reraise,
+        fallback_value=False,
+        logger=logger
+    )
+
+
+def handle_subprocess_error(
+    error: Exception,
+    command: str,
+    reraise: bool = False,
+    logger: Optional[logging.Logger] = None
+) -> Optional[bool]:
+    """
+    Specialized error handler for subprocess operations.
+    
+    Args:
+        error: The subprocess-related exception
+        command: The command that was being executed
+        reraise: Whether to re-raise the exception
+        logger: Optional logger instance
+        
+    Returns:
+        None if reraise=True, False if reraise=False
+    """
+    import subprocess
+    
+    context = f"Subprocess execution of command '{command[:100]}...'"
+    
+    # Classify subprocess errors
+    if isinstance(error, subprocess.TimeoutExpired):
+        severity = ErrorSeverity.WARNING
+    elif isinstance(error, subprocess.CalledProcessError):
+        severity = ErrorSeverity.ERROR
+    elif isinstance(error, FileNotFoundError):
+        severity = ErrorSeverity.ERROR
+    else:
+        severity = ErrorSeverity.WARNING
+    
+    return handle_error(
+        error=error,
+        context=context,
+        severity=severity,
+        include_traceback=True,
+        reraise=reraise,
+        fallback_value=False,
+        logger=logger
+    )
+
+
+def handle_config_error(
+    error: Exception,
+    context: str,
+    severity: str = ErrorSeverity.ERROR,
+    reraise: bool = True,
+    logger: Optional[logging.Logger] = None
+) -> Union[None, Any]:
+    """
+    Specialized error handler for configuration operations.
+    
+    Args:
+        error: The caught exception
+        context: Description of what configuration operation was being performed
+        severity: Error severity level
+        reraise: Whether to re-raise the exception after logging
+        logger: Optional logger instance
+        
+    Returns:
+        None if reraise=False, otherwise raises the exception
+    """
+    config_context = f"Configuration {context}"
+    
+    return handle_error(
+        error=error,
+        context=config_context,
+        severity=severity,
+        include_traceback=True,
+        reraise=reraise,
+        fallback_value=None,
+        logger=logger
+    )
+
+
+def handle_cli_error(
+    error: Exception,
+    context: str,
+    exit_code: int = 1,
+    include_traceback: bool = True,
+    logger: Optional[logging.Logger] = None
+) -> None:
+    """
+    Specialized error handler for CLI operations that exits the program.
+    
+    Args:
+        error: The caught exception
+        context: Description of what operation was being performed
+        exit_code: Exit code for sys.exit()
+        include_traceback: Whether to include full traceback in logs
+        logger: Optional logger instance
+    """
+    import sys
+    
+    cli_context = f"CLI {context}"
+    
+    handle_error(
+        error=error,
+        context=cli_context,
+        severity=ErrorSeverity.CRITICAL,
+        include_traceback=include_traceback,
+        reraise=False,
+        logger=logger
+    )
+    
+    sys.exit(exit_code)
