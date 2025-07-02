@@ -22,7 +22,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import IO, Any, Dict, List, Optional
+from typing import IO, Any, Dict, List, Optional, Type, Union
 
 import pandas as pd
 import psutil
@@ -33,6 +33,142 @@ from .data_models import MonitoringResults, ProjectConfig, RunContext, RunPaths
 from .memory_collectors.base import AbstractMemoryCollector
 
 logger = logging.getLogger(__name__)
+
+
+# --- Standardized Error Handling Utilities ---
+
+class ErrorSeverity:
+    """Define error severity levels for consistent error handling."""
+    CRITICAL = "critical"    # System failure, should exit
+    ERROR = "error"         # Operation failure, should log and potentially retry
+    WARNING = "warning"     # Unexpected but recoverable condition
+    DEBUG = "debug"         # Minor issue, for debugging purposes
+
+
+def handle_error(
+    error: Exception,
+    context: str,
+    severity: str = ErrorSeverity.ERROR,
+    include_traceback: bool = True,
+    reraise: bool = False,
+    fallback_value: Any = None
+) -> Any:
+    """
+    Standardized error handling function for consistent error processing.
+    
+    Args:
+        error: The caught exception
+        context: Description of what operation was being performed
+        severity: Error severity level (use ErrorSeverity constants)
+        include_traceback: Whether to include full traceback in logs
+        reraise: Whether to re-raise the exception after logging
+        fallback_value: Value to return if not re-raising
+        
+    Returns:
+        fallback_value if reraise=False, otherwise raises the exception
+        
+    Raises:
+        The original exception if reraise=True
+    """
+    # Map severity to log levels
+    severity_to_level = {
+        ErrorSeverity.CRITICAL: logging.CRITICAL,
+        ErrorSeverity.ERROR: logging.ERROR,
+        ErrorSeverity.WARNING: logging.WARNING,
+        ErrorSeverity.DEBUG: logging.DEBUG,
+    }
+    
+    log_level = severity_to_level.get(severity, logging.ERROR)
+    error_type = type(error).__name__
+    
+    # Create comprehensive error message
+    msg = f"{context}: {error_type}: {error}"
+    
+    # Log with appropriate level and traceback
+    logger.log(log_level, msg, exc_info=include_traceback)
+    
+    if reraise:
+        raise error
+    
+    return fallback_value
+
+
+def handle_file_error(
+    error: Exception,
+    file_path: Union[str, Path],
+    operation: str,
+    reraise: bool = True
+) -> Optional[bool]:
+    """
+    Specialized error handler for file operations.
+    
+    Args:
+        error: The file-related exception
+        file_path: Path to the file being operated on
+        operation: Description of the file operation (e.g., "reading", "writing")
+        reraise: Whether to re-raise the exception
+        
+    Returns:
+        None if reraise=True, False if reraise=False
+    """
+    context = f"File {operation} operation on '{file_path}'"
+    
+    # Classify common file errors
+    if isinstance(error, FileNotFoundError):
+        severity = ErrorSeverity.ERROR
+    elif isinstance(error, PermissionError):
+        severity = ErrorSeverity.ERROR
+    elif isinstance(error, OSError):
+        severity = ErrorSeverity.ERROR
+    else:
+        severity = ErrorSeverity.WARNING
+    
+    return handle_error(
+        error=error,
+        context=context,
+        severity=severity,
+        include_traceback=True,
+        reraise=reraise,
+        fallback_value=False
+    )
+
+
+def handle_subprocess_error(
+    error: Exception,
+    command: str,
+    reraise: bool = False
+) -> Optional[bool]:
+    """
+    Specialized error handler for subprocess operations.
+    
+    Args:
+        error: The subprocess-related exception
+        command: The command that was being executed
+        reraise: Whether to re-raise the exception
+        
+    Returns:
+        None if reraise=True, False if reraise=False
+    """
+    context = f"Subprocess execution of command '{command[:100]}...'"
+    
+    # Classify subprocess errors
+    if isinstance(error, subprocess.TimeoutExpired):
+        severity = ErrorSeverity.WARNING
+    elif isinstance(error, subprocess.CalledProcessError):
+        severity = ErrorSeverity.ERROR
+    elif isinstance(error, FileNotFoundError):
+        severity = ErrorSeverity.ERROR
+    else:
+        severity = ErrorSeverity.WARNING
+    
+    return handle_error(
+        error=error,
+        context=context,
+        severity=severity,
+        include_traceback=True,
+        reraise=reraise,
+        fallback_value=False
+    )
 
 # --- Signal Handling Infrastructure ---
 # Since signal handlers cannot be bound to class instances directly,
@@ -73,7 +209,13 @@ def _monitoring_worker_entry(
                 f"Monitoring worker (PID:{p.pid}) pinned to core {core_id}."
             )
         except Exception as e:
-            logger.error(f"Failed to pin worker to core {core_id}: {e}")
+            handle_error(
+                error=e,
+                context=f"CPU core pinning to core {core_id}",
+                severity=ErrorSeverity.WARNING,
+                include_traceback=False,
+                reraise=False
+            )
 
     if not input_queue or not output_queue:
         logger.error("Worker: Input or output queue not available")
@@ -87,8 +229,14 @@ def _monitoring_worker_entry(
     while True:
         try:
             queue_item = input_queue.get(timeout=1.0)  # Add timeout to avoid hanging
-        except Exception:
-            logger.debug("Worker: Queue get timeout, checking for sentinel")
+        except Exception as e:
+            handle_error(
+                error=e,
+                context="Worker queue get operation",
+                severity=ErrorSeverity.DEBUG,
+                include_traceback=False,
+                reraise=False
+            )
             continue
             
         if queue_item is None:  # Sentinel value received
@@ -100,7 +248,13 @@ def _monitoring_worker_entry(
                     input_queue.put(None, timeout=0.5)  # Use timeout to avoid blocking
                     logger.debug("Worker: Propagated sentinel to other workers")
                 except Exception as e:
-                    logger.debug(f"Worker: Failed to propagate sentinel (queue might be full): {e}")
+                    handle_error(
+                        error=e,
+                        context="Worker sentinel propagation",
+                        severity=ErrorSeverity.DEBUG,
+                        include_traceback=False,
+                        reraise=False
+                    )
                 sentinel_seen = True
             break
 
@@ -154,7 +308,13 @@ def _monitoring_worker_entry(
             output_queue.put(local_results, timeout=2.0)  # Add timeout to prevent blocking
             logger.debug(f"Worker: Put processed group {processed_groups} into output queue (total memory: {group_total_memory} KB)")
         except Exception as e:
-            logger.warning(f"Worker: Failed to put result into output queue: {e}")
+            handle_error(
+                error=e,
+                context=f"Worker output queue put operation for group {processed_groups}",
+                severity=ErrorSeverity.WARNING,
+                include_traceback=False,
+                reraise=False
+            )
             # Continue processing even if one put fails
 
     logger.info(f"Monitoring worker finished, processed {processed_groups} groups")
@@ -336,7 +496,13 @@ class BuildRunner:
                 if not stop_success:
                     logger.warning("Collector did not stop cleanly during teardown")
             except Exception as e:
-                logger.error(f"Error stopping collector during teardown: {e}")
+                handle_error(
+                    error=e,
+                    context="Collector stop during teardown",
+                    severity=ErrorSeverity.WARNING,
+                    include_traceback=True,
+                    reraise=False
+                )
 
         if self.producer_thread and self.producer_thread.is_alive():
             self.producer_thread.join(timeout=5)
@@ -568,7 +734,13 @@ class BuildRunner:
                 if not stop_success:
                     logger.warning("Collector did not stop cleanly, but continuing with shutdown")
             except Exception as e:
-                logger.error(f"Error stopping collector: {e}")
+                handle_error(
+                    error=e,
+                    context="Collector stop during normal shutdown",
+                    severity=ErrorSeverity.ERROR,
+                    include_traceback=True,
+                    reraise=False
+                )
                 # Continue with shutdown even if collector stop failed
 
         if self.producer_thread:
@@ -589,7 +761,13 @@ class BuildRunner:
                     self.input_queue.put(None, timeout=2.0)
                     logger.debug(f"Sent termination signal to worker {i+1}")
                 except Exception as e:
-                    logger.warning(f"Failed to send termination signal to worker {i+1}: {e}")
+                    handle_error(
+                        error=e,
+                        context=f"Sending termination signal to worker {i+1}",
+                        severity=ErrorSeverity.WARNING,
+                        include_traceback=False,
+                        reraise=False
+                    )
                     break
 
             # Wait for all worker processes to finish with proper timeout
@@ -601,7 +779,13 @@ class BuildRunner:
                     else:
                         logger.debug(f"Worker process {i+1} finished successfully")
                 except Exception as e:
-                    logger.warning(f"Error waiting for worker process {i+1}: {e}")
+                    handle_error(
+                        error=e,
+                        context=f"Waiting for worker process {i+1} to finish",
+                        severity=ErrorSeverity.WARNING,
+                        include_traceback=False,
+                        reraise=False
+                    )
             
             # Set workers finished event
             self._workers_finished.set()
@@ -724,7 +908,13 @@ class BuildRunner:
                         f"Memory data saved to {self.run_context.paths.output_parquet_file}"
                     )
             except Exception as e:
-                logger.error(f"Failed to save Parquet file: {e}", exc_info=True)
+                handle_error(
+                    error=e,
+                    context=f"Saving Parquet file to {self.run_context.paths.output_parquet_file}",
+                    severity=ErrorSeverity.ERROR,
+                    include_traceback=True,
+                    reraise=False
+                )
 
     def _producer_loop(self) -> None:
         """
@@ -757,12 +947,24 @@ class BuildRunner:
                     self.input_queue.put((sample_group, timestamp), timeout=5.0)
                     logger.debug(f"Producer: Put sample group {sample_count} into input queue")
                 except Exception as e:
-                    logger.warning(f"Producer: Failed to queue sample group {sample_count}: {e}")
+                    handle_error(
+                        error=e,
+                        context=f"Producer queuing sample group {sample_count}",
+                        severity=ErrorSeverity.WARNING,
+                        include_traceback=False,
+                        reraise=False
+                    )
                     # Continue trying to process remaining samples
                     continue
 
         except Exception as e:
-            logger.error(f"Producer: Error in sample collection loop: {e}", exc_info=True)
+            handle_error(
+                error=e,
+                context="Producer sample collection loop",
+                severity=ErrorSeverity.ERROR,
+                include_traceback=True,
+                reraise=False
+            )
         finally:
             logger.info(f"Producer loop finished. Processed {sample_count} sample groups. All samples have been queued.")
             # Signal that all data has been queued for processing

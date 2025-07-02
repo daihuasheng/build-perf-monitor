@@ -23,6 +23,29 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# --- Standardized Error Handling for Main ---
+
+def handle_cli_error(
+    error: Exception,
+    context: str,
+    exit_code: int = 1,
+    include_traceback: bool = True
+) -> None:
+    """
+    Standardized error handling for CLI operations.
+    
+    Args:
+        error: The caught exception
+        context: Description of what operation was being performed
+        exit_code: Exit code for sys.exit()
+        include_traceback: Whether to include full traceback in logs
+    """
+    error_type = type(error).__name__
+    msg = f"CLI {context}: {error_type}: {error}"
+    logger.error(msg, exc_info=include_traceback)
+    sys.exit(exit_code)
+
+
 def main_cli():
     """
     Main command-line interface for the MyMonitor application.
@@ -42,8 +65,12 @@ def main_cli():
     try:
         app_config = get_config()
     except (FileNotFoundError, KeyError) as e:
-        logger.error(f"Failed to load configuration: {e}", exc_info=True)
-        sys.exit(1)
+        handle_cli_error(
+            error=e,
+            context="configuration loading",
+            exit_code=1,
+            include_traceback=True
+        )
 
     monitor_config = app_config.monitor
 
@@ -79,11 +106,13 @@ def main_cli():
     if args.jobs:
         try:
             jobs_to_run = [int(j.strip()) for j in args.jobs.split(",")]
-        except ValueError:
-            logger.error(
-                f"Invalid format for --jobs: '{args.jobs}'. Use comma-separated integers."
-        )
-        sys.exit(1)
+        except ValueError as e:
+            handle_cli_error(
+                error=e,
+                context=f"parsing --jobs argument '{args.jobs}'",
+                exit_code=1,
+                include_traceback=False
+            )
     else:
         jobs_to_run = monitor_config.default_jobs
 
@@ -124,7 +153,7 @@ def main_cli():
                 runner.run()
             except Exception as e:
                 logger.error(
-                    f"An unexpected error occurred during monitoring for -j{j_level}: {e}",
+                    f"Unexpected error during monitoring for project '{project.name}' with -j{j_level}: {type(e).__name__}: {e}",
                     exc_info=True,
             )
                 continue
@@ -165,7 +194,10 @@ def main_cli():
                 logger.warning("Summary plotter tool stderr:\n" + result_summary.stderr)
 
         except Exception as e:
-            logger.error(f"Failed to execute plotter tool: {e}", exc_info=True)
+            logger.error(
+                f"Failed to execute plotter tool: {type(e).__name__}: {e}",
+                exc_info=True
+            )
         logger.info("--- Plot generation finished ---")
 
 

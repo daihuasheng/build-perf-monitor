@@ -74,8 +74,9 @@ def parse_shell_wrapper_command(cmd_name: str, cmd_full: str) -> Tuple[str, str]
         # 再次解析被包装的命令
         try:
             wrapped_parts = shlex.split(wrapped_command)
-        except ValueError:
+        except ValueError as e:
             # 如果解析失败，可能是复杂的shell语法，保持原样
+            logger.debug(f"Failed to parse shell command '{wrapped_command}': {e}")
             return cmd_name, cmd_full
             
         if not wrapped_parts:
@@ -123,9 +124,10 @@ def _parse_core_range_str(core_str: str) -> Set[int]:
                 cores.update(range(start, end + 1))
             else:
                 cores.add(int(part))
-    except ValueError:
+    except ValueError as e:
         logger.warning(
-            f"Could not parse core range string '{core_str}'. Returning empty set."
+            f"Failed to parse core range string '{core_str}': {type(e).__name__}: {e}. "
+            f"Returning empty set."
         )
         return set()
     return cores
@@ -388,11 +390,13 @@ def run_command(
             check=False,
         )
         return process.returncode, process.stdout, process.stderr
-    except FileNotFoundError:
-        logger.error(f"Command not found: {shlex.split(command)[0]}")
+    except FileNotFoundError as e:
+        error_msg = f"Command not found: {shlex.split(command)[0]}"
+        logger.error(f"{error_msg}: {type(e).__name__}: {e}")
         return -1, "", f"Error: Command not found '{shlex.split(command)[0]}'"
     except Exception as e:
-        logger.error(f"An unexpected error occurred while running command: {e}")
+        error_msg = f"Unexpected error while running command '{command[:50]}...'"
+        logger.error(f"{error_msg}: {type(e).__name__}: {e}", exc_info=True)
         return -1, "", f"An unexpected error occurred: {e}"
 
 
