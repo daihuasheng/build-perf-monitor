@@ -15,7 +15,6 @@ to maintain.
 import dataclasses
 import logging
 import multiprocessing
-import multiprocessing.pool
 import os
 import shutil
 import signal
