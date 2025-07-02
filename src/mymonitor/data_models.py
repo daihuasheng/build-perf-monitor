@@ -52,7 +52,7 @@ class ProjectConfig:
     # A unique, descriptive name for the project (e.g., "qemu", "chromium").
     name: str
     # The root directory of the project where commands will be executed.
-    dir: Path
+    dir: str
     # The command used to build the project. '<N>' is a placeholder for the parallelism level.
     build_command_template: str
     # A regex pattern used by the memory collector to identify relevant processes for this project.

@@ -197,13 +197,10 @@ def _load_config(config_path: Path) -> AppConfig:
                 )
                 existing_project_names.append(project_name)
                 
-                # Validate project directory
-                project_dir = validate_path_exists(
-                    project_data.get("dir", ""),
-                    must_be_dir=True,
-                    check_readable=True,
-                    field_name=f"projects[{i}].dir"
-                )
+                # Validate project directory - store as string without checking existence
+                project_dir_str = project_data.get("dir", "").strip()
+                if not project_dir_str:
+                    raise ValidationError(f"projects[{i}].dir cannot be empty")
                 
                 # Validate build command template
                 build_command = validate_command_template(
@@ -235,7 +232,7 @@ def _load_config(config_path: Path) -> AppConfig:
                 
                 project_config = ProjectConfig(
                     name=project_name,
-                    dir=project_dir,
+                    dir=project_dir_str,
                     build_command_template=build_command,
                     process_pattern=process_pattern,
                     clean_command_template=clean_command,

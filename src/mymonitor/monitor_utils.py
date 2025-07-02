@@ -33,7 +33,7 @@ from .data_models import (
     MonitoringResults, ProjectConfig, RunContext, RunPaths,
     ErrorSeverity, handle_error, handle_file_error, handle_subprocess_error,
     ValidationError, validate_positive_integer, validate_positive_float, 
-    validate_enum_choice, validate_cpu_core_range
+    validate_enum_choice, validate_cpu_core_range, validate_path_exists
 )
 from .memory_collectors.base import AbstractMemoryCollector
 
@@ -379,6 +379,19 @@ class BuildRunner:
         """
         Prepares the environment for the build and monitoring.
         """
+        # Validate project directory path at runtime
+        try:
+            project_dir_path = validate_path_exists(
+                self.project_config.dir,
+                must_be_dir=True,
+                check_readable=True,
+                field_name=f"project '{self.project_config.name}' directory"
+            )
+            logger.info(f"Project directory validated: {project_dir_path}")
+        except ValidationError as e:
+            logger.error(f"Project directory validation failed: {e}")
+            raise
+        
         # --- New Unified CPU Allocation Planning ---
         cpu_plan = process_utils.plan_cpu_allocation(
             policy=self.scheduling_policy,
@@ -407,7 +420,7 @@ class BuildRunner:
         monitor_script_pinned_to_core_info = f"Core {self.monitor_core_id}"
 
         self.run_context = self._create_run_context(
-            cpu_plan.build_cores_desc, monitor_script_pinned_to_core_info
+            cpu_plan.build_cores_desc, monitor_script_pinned_to_core_info, project_dir_path
         )
         self._open_log_files()
         self._log_run_prologue()
@@ -469,7 +482,7 @@ class BuildRunner:
         logger.info("Teardown complete.")
 
     def _create_run_context(
-        self, build_cores_target_str: str, monitor_script_pinned_to_core_info: str
+        self, build_cores_target_str: str, monitor_script_pinned_to_core_info: str, project_dir_path: Path
     ) -> RunContext:
         """Creates the RunContext for this monitoring task."""
         if not self.final_build_command:
@@ -485,7 +498,7 @@ class BuildRunner:
 
         return RunContext(
             project_name=self.project_config.name,
-            project_dir=self.project_config.dir,
+            project_dir=project_dir_path,
             process_pattern=self.project_config.process_pattern,
             actual_build_command=self.final_build_command,
             parallelism_level=self.parallelism_level,
@@ -544,7 +557,7 @@ class BuildRunner:
 
         return_code, stdout, stderr = process_utils.run_command(
             final_clean_command,
-            self.project_config.dir,
+            self.run_context.project_dir,
             shell=True,
             executable_shell=executable,
         )

@@ -74,7 +74,7 @@ def verify_project(project_name: str, parallelism: int) -> bool:
 
     build_proc = subprocess.Popen(
         final_command,
-        cwd=project_config.dir,
+        cwd=Path(project_config.dir),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
