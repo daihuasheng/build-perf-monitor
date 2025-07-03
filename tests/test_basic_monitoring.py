@@ -231,8 +231,11 @@ def test_basic_monitoring_run(setup_test_config_files: Path, monkeypatch, capsys
     assert summary_log_file.exists(), f"Expected summary log not found at {summary_log_file}"
 
     summary_content = summary_log_file.read_text()
-    assert "build_exit_code=0" in summary_content
-    assert "peak_overall_memory_kb=" in summary_content
+    assert "Build Exit Code: 0" in summary_content
+    assert "Peak Overall Memory (PSS_KB):" in summary_content
+    assert "Total Build & Monitoring Duration:" in summary_content
+    assert "Project: FakeProject" in summary_content
+    assert "Parallelism: -j1" in summary_content
     assert "OSUtilities:Generic_Path:" in summary_content, (
         "Expected 'OSUtilities:Generic_Path' category in summary log."
     )

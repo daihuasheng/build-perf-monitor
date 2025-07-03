@@ -23,6 +23,24 @@ from ..validation import handle_error, ErrorSeverity
 logger = logging.getLogger(__name__)
 
 
+def _get_metric_name_from_collector_type(collector_type: str) -> str:
+    """
+    Map collector type to memory metric name for summary logs.
+    
+    Args:
+        collector_type: The collector type (e.g., 'pss_psutil', 'rss_pidstat')
+        
+    Returns:
+        Memory metric name (e.g., 'PSS_KB', 'RSS_KB')
+    """
+    if 'pss' in collector_type.lower():
+        return 'PSS_KB'
+    elif 'rss' in collector_type.lower():
+        return 'RSS_KB'
+    else:
+        return 'MEMORY_KB'
+
+
 class BuildRunner:
     """
     Main orchestrator for build monitoring runs.
@@ -68,6 +86,10 @@ class BuildRunner:
         # Signal handling
         self._shutdown_requested = False
         self._original_handlers = {}
+        
+        # Build timing
+        self.build_start_time: Optional[float] = None
+        self.build_end_time: Optional[float] = None
         
     def run(self) -> None:
         """
@@ -203,36 +225,27 @@ class BuildRunner:
     
     def _cleanup_partial_initialization(self) -> None:
         """
-        Clean up partially initialized components during preparation failure.
+        Clean up any partially initialized components during preparation failure.
         """
         logger.debug("Cleaning up partial initialization...")
         
-        # Clean up coordinator first (it might have started processes)
         if self.coordinator:
             try:
                 self.coordinator.stop_monitoring()
-                logger.debug("Coordinator cleaned up")
             except Exception as e:
-                logger.warning(f"Error cleaning up coordinator: {e}")
-            finally:
-                self.coordinator = None
+                logger.debug(f"Error stopping coordinator during cleanup: {e}")
         
-        # Clean up executor
         if self.executor:
             try:
                 self.executor.cleanup()
-                logger.debug("Executor cleaned up")
             except Exception as e:
-                logger.warning(f"Error cleaning up executor: {e}")
-            finally:
-                self.executor = None
+                logger.debug(f"Error cleaning up executor during cleanup: {e}")
         
-        # Clean up other components
-        if self.cleaner:
-            self.cleaner = None
-        
-        if self.run_context:
-            self.run_context = None
+        # Reset components
+        self.coordinator = None
+        self.executor = None
+        self.cleaner = None
+        self.run_context = None
         
         logger.debug("Partial initialization cleanup completed")
     
@@ -266,6 +279,9 @@ class BuildRunner:
             if not cleanup_success:
                 logger.warning("Pre-build cleanup failed, continuing anyway")
             
+            # Record build start time
+            self.build_start_time = time.time()
+            
             # Start build process
             build_pid = self.executor.start_build()
             
@@ -274,6 +290,9 @@ class BuildRunner:
             
             # Wait for build completion
             return_code, build_output = self.executor.wait_for_completion()
+            
+            # Record build end time
+            self.build_end_time = time.time()
             
             # Stop monitoring and collect results
             self.coordinator.stop_monitoring()
@@ -316,7 +335,7 @@ class BuildRunner:
     
     def _write_results(self, return_code: int, build_output: str) -> None:
         """
-        Write monitoring results to output files.
+        Write monitoring results to output files in plotter.py compatible format.
         
         Args:
             return_code: Build process return code
@@ -329,20 +348,34 @@ class BuildRunner:
         try:
             output_dir = self.run_context.paths.output_parquet_file.parent
             
-            # Write summary log
+            # Calculate build duration
+            build_duration = 0.0
+            if self.build_start_time and self.build_end_time:
+                build_duration = self.build_end_time - self.build_start_time
+            
+            # Get memory metric name
+            metric_name = _get_metric_name_from_collector_type(self.collector_type)
+            
+            # Write summary log in plotter.py compatible format
             with open(self.run_context.paths.output_summary_log_file, 'w') as f:
                 f.write(f"Build Monitoring Summary\n")
                 f.write(f"=======================\n\n")
-                f.write(f"project_name={self.project_config.name}\n")
-                f.write(f"timestamp={self.run_context.current_timestamp_str}\n")
-                f.write(f"parallelism_level={self.parallelism_level}\n")
-                f.write(f"build_exit_code={return_code}\n")
+                
+                # plotter.py expected format
+                f.write(f"Project: {self.project_config.name}\n")
+                f.write(f"Parallelism: -j{self.parallelism_level}\n")
+                f.write(f"Total Build & Monitoring Duration: {build_duration:.1f}s ({build_duration:.2f} seconds)\n")
                 
                 if self.results:
-                    f.write(f"samples_collected={len(self.results.all_samples_data)}\n")
-                    f.write(f"peak_overall_memory_kb={self.results.peak_overall_memory_kb}\n")
-                    f.write(f"peak_overall_memory_epoch={self.results.peak_overall_memory_epoch}\n\n")
-                    
+                    f.write(f"Peak Overall Memory ({metric_name}): {self.results.peak_overall_memory_kb} KB\n")
+                    f.write(f"Samples Collected: {len(self.results.all_samples_data)}\n")
+                else:
+                    f.write(f"Peak Overall Memory ({metric_name}): 0 KB\n")
+                    f.write(f"Samples Collected: 0\n")
+                
+                f.write(f"Build Exit Code: {return_code}\n\n")
+                
+                if self.results:
                     # Write category breakdown
                     f.write("--- Category Peak Memory Usage ---\n")
                     sorted_cats = sorted(
@@ -354,11 +387,9 @@ class BuildRunner:
                         num_pids = len(self.results.category_pid_set.get(cat, set()))
                         f.write(f"{cat}: {peak_mem} KB ({num_pids} pids)\n")
                 else:
-                    f.write("samples_collected=0\n")
-                    f.write("peak_overall_memory_kb=0\n\n")
+                    f.write("No memory data collected.\n")
                     
-                f.write("\nBuild Output:\n")
-                f.write("=============\n")
+                f.write("\n--- Build Output ---\n")
                 f.write(build_output)
             
             # Write build stdout log
@@ -384,6 +415,7 @@ class BuildRunner:
                 f.write(f"monitor_script_pinned_to_core_info: {self.run_context.monitor_script_pinned_to_core_info}\n")
                 f.write(f"monitor_core_id: {self.run_context.monitor_core_id}\n")
                 f.write(f"build_process_pid: {self.run_context.build_process_pid}\n")
+                f.write(f"build_duration_seconds: {build_duration:.2f}\n")
             
             # Write clean log
             with open(output_dir / "clean.log", 'w') as f:
