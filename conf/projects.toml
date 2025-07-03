@@ -63,3 +63,46 @@ process_pattern = "ninja|gn|clang[^\\s-]*|gomacc|siso|ld\\.lld|lld|python[0-9._-
 
 # The command to clean the project build artifacts.
 clean_command_template = "gn clean out/Default"
+
+
+[[projects]]
+# A descriptive name for the project.
+name = "linux"
+
+# The directory where the build command should be executed.
+dir = "/host/linux"
+
+# Optional setup command for kernel configuration (can be modified as needed).
+setup_command_template = ""
+
+# The command template for building the Linux kernel.
+build_command_template = "make -j<N>"
+
+# A regex pattern to identify processes belonging to the kernel build.
+# Includes kernel-specific tools and standard build tools.
+process_pattern = "make|gcc|cc|g\\+\\+|c\\+\\+|clang|as|ld|cc1|collect2|objcopy|objdump|ar|ranlib|strip|scripts/.*|perl|python[0-9._-]*|sh|bash|awk|sed|gawk|fixdep|modpost|kallsyms|sortextable|mkimage|pahole"
+
+# The command to clean the kernel build artifacts.
+clean_command_template = "make clean"
+
+
+[[projects]]
+# A descriptive name for the project.
+name = "gcc"
+
+# The directory where the build command should be executed.
+dir = "/host/gcc"
+
+# Setup command for GCC build (configure step).
+# Note: This assumes a separate build directory. Adjust as needed.
+setup_command_template = ""
+
+# The command template for building GCC.
+build_command_template = "make -j<N>"
+
+# A regex pattern to identify processes belonging to the GCC build.
+# Includes GCC-specific tools and multi-stage compilation processes.
+process_pattern = "make|gcc|cc|g\\+\\+|c\\+\\+|clang|as|ld|cc1|cc1plus|collect2|lto1|lto-wrapper|ar|ranlib|strip|xgcc|xg\\+\\+|build/.*gcc|gnat.*|gfortran|gcov|objcopy|objdump|nm|readelf|configure|config\\.status|libtool|python[0-9._-]*|sh|bash|awk|sed|m4|autoconf|automake|flex|bison|texinfo|makeinfo"
+
+# The command to clean the GCC build artifacts.
+clean_command_template = "make clean"
