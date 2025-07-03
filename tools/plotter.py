@@ -501,7 +501,9 @@ def plot_memory_usage_from_data_file(data_filepath: Path, args: argparse.Namespa
         data_filepath: Path to the input `.parquet` data file.
         args: The parsed command-line arguments.
     """
-    output_dir = args.output_dir or args.log_dir
+    # For detailed plots, save to the same directory as the data file (parallelism-specific directory)
+    # For summary plots, args.output_dir or args.log_dir will be used instead
+    output_dir = args.output_dir or data_filepath.parent
     output_dir.mkdir(parents=True, exist_ok=True)
 
     primary_metric_col = _get_primary_metric_from_summary_log(data_filepath)

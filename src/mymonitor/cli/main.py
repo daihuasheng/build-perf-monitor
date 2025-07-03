@@ -82,6 +82,7 @@ def main_cli() -> None:
         description="Monitor build processes for performance analysis."
     )
     parser.add_argument(
+        "-p",
         "--project",
         type=str,
         help=f"Specify a single project to run from the config. Available: {[p.name for p in app_config.projects]}",
