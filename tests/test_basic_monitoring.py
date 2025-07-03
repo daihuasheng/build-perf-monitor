@@ -236,8 +236,14 @@ def test_basic_monitoring_run(setup_test_config_files: Path, monkeypatch, capsys
     assert "Total Build & Monitoring Duration:" in summary_content
     assert "Project: FakeProject" in summary_content
     assert "Parallelism: -j1" in summary_content
-    assert "OSUtilities:Generic_Path:" in summary_content, (
-        "Expected 'OSUtilities:Generic_Path' category in summary log."
+    assert "OSUtilities:" in summary_content, (
+        "Expected 'OSUtilities' major category in summary log."
+    )
+    assert "Generic_Path:" in summary_content, (
+        "Expected 'Generic_Path' minor category in summary log."
+    )
+    assert "Total Peak Memory:" in summary_content, (
+        "Expected 'Total Peak Memory' for major categories in summary log."
     )
 
     # 3. Verify auxiliary logs

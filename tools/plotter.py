@@ -199,7 +199,9 @@ def generate_run_summary_plot(args: argparse.Namespace):
         args: The parsed command-line arguments from argparse.
     """
     logger.info("--- Generating Run Summary Plot ---")
+    # Search for both *_summary.log and */summary.log patterns
     summary_logs = list(args.log_dir.glob("*_summary.log"))
+    summary_logs.extend(args.log_dir.glob("*/summary.log"))
 
     if not summary_logs:
         logger.warning("No summary logs found. Cannot generate summary plot.")

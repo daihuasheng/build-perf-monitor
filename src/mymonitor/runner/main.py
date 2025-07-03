@@ -8,8 +8,9 @@ build monitoring process using the new modular architecture.
 import logging
 import signal
 import time
+from collections import defaultdict
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..config import get_config
 from ..execution.runner import BuildExecutor, BuildCleaner
@@ -39,6 +40,78 @@ def _get_metric_name_from_collector_type(collector_type: str) -> str:
         return 'RSS_KB'
     else:
         return 'MEMORY_KB'
+
+
+def _format_category_stats(category_peak_sum: Dict[str, int], 
+                          category_pid_set: Dict[str, Set[str]]) -> str:
+    """
+    Format category statistics for summary log with major/minor category grouping.
+    
+    Args:
+        category_peak_sum: Dictionary mapping category to peak memory
+        category_pid_set: Dictionary mapping category to set of PIDs
+        
+    Returns:
+        Formatted string with category statistics
+    """
+    if not category_peak_sum:
+        return "No category data available.\n"
+    
+    # Group by major category
+    major_categories: Dict[str, Dict[str, Any]] = {}
+    
+    for category, peak_memory in category_peak_sum.items():
+        if ':' in category:
+            major_cat, minor_cat = category.split(':', 1)
+        else:
+            major_cat = category
+            minor_cat = 'Unknown'
+        
+        # Initialize major category if not exists
+        if major_cat not in major_categories:
+            major_categories[major_cat] = {
+                'minor_categories': {},
+                'total_memory': 0,
+                'total_pids': set()
+            }
+        
+        # Add to minor categories
+        major_categories[major_cat]['minor_categories'][minor_cat] = {
+            'peak_memory': peak_memory,
+            'pid_count': len(category_pid_set.get(category, set()))
+        }
+        
+        # Update major category totals
+        major_categories[major_cat]['total_memory'] += peak_memory
+        major_categories[major_cat]['total_pids'].update(category_pid_set.get(category, set()))
+    
+    # Sort major categories by name
+    sorted_major_cats = sorted(major_categories.keys())
+    
+    # Format output
+    output_lines = []
+    
+    for major_cat in sorted_major_cats:
+        major_data = major_categories[major_cat]
+        
+        # Major category header
+        output_lines.append(f"\n{major_cat}:")
+        output_lines.append(f"  Total Peak Memory: {major_data['total_memory']} KB "
+                           f"({len(major_data['total_pids'])} total pids)")
+        
+        # Sort minor categories by peak memory (descending)
+        sorted_minor_cats = sorted(
+            major_data['minor_categories'].items(),
+            key=lambda x: x[1]['peak_memory'],
+            reverse=True
+        )
+        
+        # Minor categories
+        for minor_cat, minor_data in sorted_minor_cats:
+            output_lines.append(f"    {minor_cat}: {minor_data['peak_memory']} KB "
+                               f"({minor_data['pid_count']} pids)")
+    
+    return '\n'.join(output_lines)
 
 
 class BuildRunner:
@@ -376,16 +449,14 @@ class BuildRunner:
                 f.write(f"Build Exit Code: {return_code}\n\n")
                 
                 if self.results:
-                    # Write category breakdown
-                    f.write("--- Category Peak Memory Usage ---\n")
-                    sorted_cats = sorted(
-                        self.results.category_peak_sum.items(),
-                        key=lambda item: item[1],
-                        reverse=True,
+                    # Write enhanced category breakdown
+                    f.write("--- Category Peak Memory Usage ---")
+                    category_stats = _format_category_stats(
+                        self.results.category_peak_sum,
+                        self.results.category_pid_set
                     )
-                    for cat, peak_mem in sorted_cats:
-                        num_pids = len(self.results.category_pid_set.get(cat, set()))
-                        f.write(f"{cat}: {peak_mem} KB ({num_pids} pids)\n")
+                    f.write(category_stats)
+                    f.write("\n")
                 else:
                     f.write("No memory data collected.\n")
                     
