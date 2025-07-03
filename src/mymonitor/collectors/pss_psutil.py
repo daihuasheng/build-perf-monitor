@@ -287,7 +287,7 @@ class PssPsutilCollector(AbstractMemoryCollector):
             logger.warning("Collector has not been started; read_samples will not run.")
             return
 
-        logger.info("PssPsutilCollector sample reading loop started.")
+        logger.debug("PssPsutilCollector sample reading loop started.")
         iteration_count = 0
         # The main loop continues as long as the collector is active.
         # The stop() method will set _stop_event to True, causing a graceful exit.
