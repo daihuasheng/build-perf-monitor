@@ -103,9 +103,9 @@ def mock_rules_config(monkeypatch):
     # Use monkeypatch to directly set the internal _CONFIG object in the config module.
     # This ensures that any call to config.get_config() during this test will return our mock object.
     # We also set it to None after the test to ensure clean state for other tests.
-    monkeypatch.setattr("mymonitor.config._CONFIG", mock_app_config)
+    monkeypatch.setattr("mymonitor.config.manager._CONFIG", mock_app_config)
     yield
-    monkeypatch.setattr("mymonitor.config._CONFIG", None)
+    monkeypatch.setattr("mymonitor.config.manager._CONFIG", None)
 
 
 # --- Tests for get_process_category ---

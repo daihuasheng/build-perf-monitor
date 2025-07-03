@@ -65,10 +65,10 @@ def app_config_real_rules(monkeypatch):
     )
 
     # Inject the controlled config object, bypassing the file loader.
-    monkeypatch.setattr(config, "_CONFIG", mock_app_config)
+    monkeypatch.setattr("mymonitor.config.manager._CONFIG", mock_app_config)
     yield mock_app_config
     # Clean up after the test.
-    monkeypatch.setattr(config, "_CONFIG", None)
+    monkeypatch.setattr("mymonitor.config.manager._CONFIG", None)
 
 
 # A comprehensive list of test cases to validate the rules in conf/rules.toml
