@@ -11,9 +11,10 @@ import time
 from pathlib import Path
 from typing import Optional, Tuple
 
-from .. import process_utils
-from ..data_models import (
-    RunContext, RunPaths, ValidationError,
+from ..system import plan_cpu_allocation, prepare_full_build_command
+from ..models.runtime import RunContext, RunPaths, CpuAllocationPlan
+from ..validation import (
+    ValidationError,
     validate_positive_integer, validate_positive_float,
     validate_enum_choice, validate_cpu_core_range, validate_path_exists
 )
@@ -108,7 +109,7 @@ class BuildConfiguration:
         except ValidationError as e:
             raise ValidationError(f"BuildRunner parameter validation failed: {e}")
 
-    def prepare_cpu_allocation(self) -> 'process_utils.CpuAllocationPlan':
+    def prepare_cpu_allocation(self) -> CpuAllocationPlan:
         """
         Prepare CPU allocation plan based on configuration.
         
@@ -117,7 +118,7 @@ class BuildConfiguration:
         if not self.validated:
             raise RuntimeError("Configuration must be validated before preparing CPU allocation")
             
-        cpu_plan = process_utils.plan_cpu_allocation(
+        cpu_plan = plan_cpu_allocation(
             policy=self.config.scheduling_policy,
             j_level=self.config.parallelism_level,
             manual_build_cores_str=self.config.manual_build_cores,
@@ -131,7 +132,7 @@ class BuildConfiguration:
         
         return cpu_plan
 
-    def prepare_build_command(self, cpu_plan: 'process_utils.CpuAllocationPlan') -> Tuple[str, Optional[str]]:
+    def prepare_build_command(self, cpu_plan: CpuAllocationPlan) -> Tuple[str, Optional[str]]:
         """
         Prepare the final build command with setup and CPU allocation.
         
@@ -142,7 +143,7 @@ class BuildConfiguration:
         if not self.validated:
             raise RuntimeError("Configuration must be validated before preparing build command")
             
-        final_build_command, executable_shell = process_utils.prepare_full_build_command(
+        final_build_command, executable_shell = prepare_full_build_command(
             main_command_template=self.config.project_config.build_command_template,
             j_level=self.config.parallelism_level,
             taskset_prefix=cpu_plan.build_command_prefix,
@@ -155,7 +156,7 @@ class BuildConfiguration:
         
         return final_build_command, executable_shell
 
-    def create_run_context(self, cpu_plan: 'process_utils.CpuAllocationPlan') -> RunContext:
+    def create_run_context(self, cpu_plan: CpuAllocationPlan) -> RunContext:
         """
         Create the RunContext for this monitoring task.
         

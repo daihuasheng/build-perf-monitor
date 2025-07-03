@@ -12,10 +12,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ..data_models import (
-    MonitoringResults, ProjectConfig, RunContext
-)
-from ..memory_collectors.base import AbstractMemoryCollector
+from ..models.config import ProjectConfig
+from ..models.results import MonitoringResults
+from ..models.runtime import RunContext
+from ..collectors.base import AbstractMemoryCollector
 
 
 @dataclass

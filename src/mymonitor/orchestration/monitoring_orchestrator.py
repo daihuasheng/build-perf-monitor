@@ -15,9 +15,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from .. import process_utils
-from ..data_models import ErrorSeverity, MonitoringResults, handle_error
-from ..memory_collectors.base import AbstractMemoryCollector
+from ..classification import get_process_category
+from ..models.results import MonitoringResults
+from ..validation import ErrorSeverity, handle_error
+from ..collectors.base import AbstractMemoryCollector
 from .shared_state import BuildRunnerConfig, RuntimeState, TimeoutConstants
 
 logger = logging.getLogger(__name__)
@@ -411,7 +412,7 @@ class MonitoringOrchestrator:
             group_total_memory = 0.0
 
             for sample in sample_group:
-                major_cat, minor_cat = process_utils.get_process_category(
+                major_cat, minor_cat = get_process_category(
                     sample.command_name, sample.full_command
                 )
 

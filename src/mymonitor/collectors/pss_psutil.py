@@ -130,8 +130,8 @@ class PssPsutilCollector(AbstractMemoryCollector):
                 f"interval: {self.monitoring_interval}s, mode: {self.mode})."
         )
         self._collecting = True
-            self._stop_event.clear()  # Reset stop event in case of restart.
-            self._start_time = time.monotonic()
+        self._stop_event.clear()  # Reset stop event in case of restart.
+        self._start_time = time.monotonic()
 
     def stop(self, timeout: float = 10.0) -> bool:
         """
@@ -156,7 +156,7 @@ class PssPsutilCollector(AbstractMemoryCollector):
             logger.info(f"Stopping PssPsutilCollector (timeout: {timeout}s)")
             
             # Set stop signals
-        self._collecting = False  # Indicate that collection should not proceed.
+            self._collecting = False  # Indicate that collection should not proceed.
             self._stop_event.set()  # Signal the loop in read_samples to exit.
             
             # Record stop time for statistics

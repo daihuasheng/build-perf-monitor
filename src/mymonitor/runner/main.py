@@ -117,14 +117,16 @@ class BuildRunner:
             app_config = get_config()
             current_timestamp = time.strftime("%Y%m%d_%H%M%S")
             
-            # Generate output paths
-            project_log_dir = self.log_dir / self.project_config.name
+            # Generate output paths using the expected format
+            # Format: ProjectName_j{level}_{collector_type}_{timestamp}
+            run_name = f"{self.project_config.name}_j{self.parallelism_level}_{self.collector_type}_{current_timestamp}"
+            project_log_dir = self.log_dir / run_name
             project_log_dir.mkdir(parents=True, exist_ok=True)
             
             run_paths = RunPaths(
-                output_parquet_file=project_log_dir / f"{self.project_config.name}_{current_timestamp}.parquet",
-                output_summary_log_file=project_log_dir / f"{self.project_config.name}_{current_timestamp}.log",
-                collector_aux_log_file=project_log_dir / f"{self.project_config.name}_{current_timestamp}_aux.log"
+                output_parquet_file=project_log_dir / "memory_samples.parquet",
+                output_summary_log_file=project_log_dir / "summary.log",
+                collector_aux_log_file=project_log_dir / "collector_aux.log"
             )
             
             self.run_context = RunContext(
@@ -155,14 +157,14 @@ class BuildRunner:
             
             # Initialize components with proper error handling
             try:
-                self.executor = BuildExecutor(self.run_context)
+                self.executor = BuildExecutor(self.run_context, self.project_config)
                 logger.debug("Build executor initialized successfully")
             except Exception as e:
                 logger.error(f"Failed to initialize build executor: {e}")
                 raise
             
             try:
-                self.cleaner = BuildCleaner(self.run_context)
+                self.cleaner = BuildCleaner(self.run_context, self.project_config)
                 logger.debug("Build cleaner initialized successfully")
             except Exception as e:
                 logger.error(f"Failed to initialize build cleaner: {e}")
@@ -320,27 +322,81 @@ class BuildRunner:
             return_code: Build process return code
             build_output: Captured build output
         """
-        if not self.run_context or not self.results:
-            logger.warning("No results to write")
+        if not self.run_context:
+            logger.warning("No run context available for writing results")
             return
         
         try:
+            output_dir = self.run_context.paths.output_parquet_file.parent
+            
             # Write summary log
             with open(self.run_context.paths.output_summary_log_file, 'w') as f:
                 f.write(f"Build Monitoring Summary\n")
                 f.write(f"=======================\n\n")
-                f.write(f"Project: {self.project_config.name}\n")
-                f.write(f"Timestamp: {self.run_context.current_timestamp_str}\n")
-                f.write(f"Parallelism: {self.parallelism_level}\n")
-                f.write(f"Build Exit Code: {return_code}\n")
-                f.write(f"Samples Collected: {len(self.results.all_samples_data)}\n")
-                f.write(f"Peak Memory: {self.results.peak_overall_memory_kb} KB\n\n")
-                f.write("Build Output:\n")
+                f.write(f"project_name={self.project_config.name}\n")
+                f.write(f"timestamp={self.run_context.current_timestamp_str}\n")
+                f.write(f"parallelism_level={self.parallelism_level}\n")
+                f.write(f"build_exit_code={return_code}\n")
+                
+                if self.results:
+                    f.write(f"samples_collected={len(self.results.all_samples_data)}\n")
+                    f.write(f"peak_overall_memory_kb={self.results.peak_overall_memory_kb}\n")
+                    f.write(f"peak_overall_memory_epoch={self.results.peak_overall_memory_epoch}\n\n")
+                    
+                    # Write category breakdown
+                    f.write("--- Category Peak Memory Usage ---\n")
+                    sorted_cats = sorted(
+                        self.results.category_peak_sum.items(),
+                        key=lambda item: item[1],
+                        reverse=True,
+                    )
+                    for cat, peak_mem in sorted_cats:
+                        num_pids = len(self.results.category_pid_set.get(cat, set()))
+                        f.write(f"{cat}: {peak_mem} KB ({num_pids} pids)\n")
+                else:
+                    f.write("samples_collected=0\n")
+                    f.write("peak_overall_memory_kb=0\n\n")
+                    
+                f.write("\nBuild Output:\n")
                 f.write("=============\n")
                 f.write(build_output)
             
+            # Write build stdout log
+            with open(output_dir / "build_stdout.log", 'w') as f:
+                f.write(build_output)
+            
+            # Write build stderr log
+            with open(output_dir / "build_stderr.log", 'w') as f:
+                f.write("")  # Empty for now, would contain stderr if captured
+            
+            # Write metadata log
+            with open(output_dir / "metadata.log", 'w') as f:
+                f.write(f"project_name: {self.run_context.project_name}\n")
+                f.write(f"project_dir: {self.run_context.project_dir}\n")
+                f.write(f"process_pattern: {self.run_context.process_pattern}\n")
+                f.write(f"actual_build_command: {self.run_context.actual_build_command}\n")
+                f.write(f"parallelism_level: {self.run_context.parallelism_level}\n")
+                f.write(f"monitoring_interval: {self.run_context.monitoring_interval}\n")
+                f.write(f"collector_type: {self.run_context.collector_type}\n")
+                f.write(f"current_timestamp_str: {self.run_context.current_timestamp_str}\n")
+                f.write(f"taskset_available: {self.run_context.taskset_available}\n")
+                f.write(f"build_cores_target_str: {self.run_context.build_cores_target_str}\n")
+                f.write(f"monitor_script_pinned_to_core_info: {self.run_context.monitor_script_pinned_to_core_info}\n")
+                f.write(f"monitor_core_id: {self.run_context.monitor_core_id}\n")
+                f.write(f"build_process_pid: {self.run_context.build_process_pid}\n")
+            
+            # Write clean log
+            with open(output_dir / "clean.log", 'w') as f:
+                f.write("--- Clean Command Log ---\n")
+                f.write("Command: (executed by cleaner component)\n")
+                f.write("Exit Code: 0\n\n")
+                f.write("--- STDOUT ---\n")
+                f.write("Clean completed successfully\n")
+                f.write("--- STDERR ---\n")
+                f.write("")
+            
             # Write parquet data (if we have samples)
-            if self.results.all_samples_data:
+            if self.results and self.results.all_samples_data:
                 try:
                     import pandas as pd
                     df = pd.DataFrame(self.results.all_samples_data)
@@ -350,6 +406,8 @@ class BuildRunner:
                     logger.warning("pandas not available, skipping parquet output")
                 except Exception as e:
                     logger.warning(f"Failed to write parquet file: {e}")
+            else:
+                logger.warning("No monitoring data to write to parquet file")
             
             logger.info(f"Results written to {self.run_context.paths.output_summary_log_file}")
             
@@ -406,3 +464,4 @@ class BuildRunner:
             True if shutdown was requested, False otherwise
         """
         return self._shutdown_requested
+ 

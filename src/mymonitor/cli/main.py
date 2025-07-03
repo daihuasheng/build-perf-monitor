@@ -1,38 +1,28 @@
-"""Main command-line interface for the MyMonitor build performance monitoring application.
+"""
+Command-line interface for the MyMonitor build performance monitoring application.
 
-This module serves as the primary entry point for the MyMonitor application, providing
-a command-line interface for monitoring build processes and collecting performance data.
-It coordinates configuration loading, project selection, build execution monitoring,
-and result visualization.
-
-The main workflow includes:
-1. Loading configuration from TOML files
-2. Parsing command-line arguments for project and job selection
-3. Executing monitoring runs for each project/job combination
-4. Generating performance plots and reports
-
-Usage:
-    python -m mymonitor.main [--project PROJECT] [--jobs JOBS] [--no-pre-clean]
-
-Example:
-    python -m mymonitor.main --project chromium --jobs 8,16 --no-pre-clean
+This module provides the main CLI entry point for the MyMonitor application,
+handling command-line arguments, configuration validation, and orchestrating
+monitoring runs across multiple projects and parallelism levels.
 """
 
 import argparse
 import logging
+import multiprocessing
 import subprocess
 import sys
 import time
 from pathlib import Path
-import multiprocessing
 
-# Local application imports
-from .config import get_config
-from .monitor_utils import BuildRunner
-from .process_utils import (
-    check_pidstat_installed,
+from ..config import get_config
+from ..runner import BuildRunner
+from ..system.commands import check_pidstat_installed
+from ..validation import (
+    handle_cli_error,
+    ValidationError,
+    validate_jobs_list,
+    validate_project_name,
 )
-from .data_models import handle_cli_error, ValidationError, validate_jobs_list, validate_project_name
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -45,7 +35,8 @@ logger = logging.getLogger(__name__)
 
 
 def main_cli() -> None:
-    """Main command-line interface for the MyMonitor application.
+    """
+    Main command-line interface for the MyMonitor application.
     
     This function provides the primary entry point for the CLI, handling:
     - Multiprocessing configuration for cross-platform compatibility
@@ -64,8 +55,6 @@ def main_cli() -> None:
     """
     # Set the start method for multiprocessing to 'spawn' to ensure stability
     # across different platforms and avoid potential deadlocks with fork.
-    # This should be done early, ideally within the `if __name__ == '__main__':` block.
-    # We place it here as it's the main entry point for the CLI.
     try:
         multiprocessing.set_start_method("spawn", force=True)
         logger.info("Set multiprocessing start method to 'spawn'.")
@@ -74,6 +63,7 @@ def main_cli() -> None:
         logger.debug("Multiprocessing context already set.")
         pass
 
+    # Load application configuration
     try:
         app_config = get_config()
     except (FileNotFoundError, KeyError) as e:
@@ -87,6 +77,7 @@ def main_cli() -> None:
 
     monitor_config = app_config.monitor
 
+    # Parse command-line arguments
     parser = argparse.ArgumentParser(
         description="Monitor build processes for performance analysis."
     )
@@ -108,6 +99,7 @@ def main_cli() -> None:
     )
     args = parser.parse_args()
 
+    # Validate and filter projects
     if args.project:
         # Validate project name format first
         try:
@@ -134,6 +126,7 @@ def main_cli() -> None:
     else:
         projects_to_run = app_config.projects
 
+    # Validate and parse job levels
     if args.jobs:
         try:
             jobs_to_run = validate_jobs_list(
@@ -153,14 +146,17 @@ def main_cli() -> None:
     else:
         jobs_to_run = monitor_config.default_jobs
 
+    # Create output directory for this run
     run_timestamp = time.strftime("%Y%m%d_%H%M%S")
     current_run_output_dir = monitor_config.log_root_dir / f"run_{run_timestamp}"
     current_run_output_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Log and plot outputs will be saved in: {current_run_output_dir}")
 
+    # Execute monitoring for each project and job level combination
     for project in projects_to_run:
         logger.info(f">>> Starting processing for project: {project.name}")
 
+        # Check system dependencies
         if (
             monitor_config.metric_type == "rss_pidstat"
             and not check_pidstat_installed()
@@ -172,57 +168,55 @@ def main_cli() -> None:
             )
             continue
 
+        # Run monitoring for each parallelism level
         for j_level in jobs_to_run:
             logger.info(f"--- Running with -j{j_level} ---")
             try:
                 runner = BuildRunner(
                     project_config=project,
                     parallelism_level=j_level,
-                monitoring_interval=monitor_config.interval_seconds,
-                log_dir=current_run_output_dir,
-                collector_type=monitor_config.metric_type,
-                skip_pre_clean=args.no_pre_clean,
-                    scheduling_policy=monitor_config.scheduling_policy,
-                    manual_build_cores=monitor_config.manual_build_cores,
-                    manual_monitoring_cores=monitor_config.manual_monitoring_cores,
-                    monitor_core_id=monitor_config.monitor_core,
+                    monitoring_interval=monitor_config.interval_seconds,
+                    log_dir=current_run_output_dir,
+                    collector_type=monitor_config.metric_type,
+                    skip_pre_clean=args.no_pre_clean,
                 )
                 runner.run()
             except Exception as e:
                 logger.error(
                     f"Unexpected error during monitoring for project '{project.name}' with -j{j_level}: {type(e).__name__}: {e}",
                     exc_info=True,
-            )
+                )
                 continue
+                
         logger.info(f"<<< Finished processing for project: {project.name}")
 
     logger.info("All specified build and monitoring tasks completed.")
 
+    # Generate plots if not disabled
     if not monitor_config.skip_plots:
         logger.info("--- Starting plot generation via external tool ---")
         try:
+            # Find the plotter tool relative to the package
+            plotter_path = Path(__file__).parent.parent.parent.parent / "tools" / "plotter.py"
+            
+            # Generate detailed plots
             plotter_cmd_detailed = [
                 sys.executable,
-                str(Path(__file__).parent.parent / "tools" / "plotter.py"),
+                str(plotter_path),
                 "--log-dir",
                 str(current_run_output_dir),
             ]
-            logger.info(
-                f"Executing plotter for detailed plots: {' '.join(plotter_cmd_detailed)}"
-            )
+            logger.info(f"Executing plotter for detailed plots: {' '.join(plotter_cmd_detailed)}")
             result_detailed = subprocess.run(
                 plotter_cmd_detailed, capture_output=True, text=True, check=False
             )
             logger.info("Detailed plotter tool output:\n" + result_detailed.stdout)
             if result_detailed.stderr:
-                logger.warning(
-                    "Detailed plotter tool stderr:\n" + result_detailed.stderr
-                )
+                logger.warning("Detailed plotter tool stderr:\n" + result_detailed.stderr)
 
+            # Generate summary plots
             plotter_cmd_summary = plotter_cmd_detailed + ["--summary-plot"]
-            logger.info(
-                f"Executing plotter for summary plot: {' '.join(plotter_cmd_summary)}"
-            )
+            logger.info(f"Executing plotter for summary plot: {' '.join(plotter_cmd_summary)}")
             result_summary = subprocess.run(
                 plotter_cmd_summary, capture_output=True, text=True, check=False
             )
@@ -231,12 +225,10 @@ def main_cli() -> None:
                 logger.warning("Summary plotter tool stderr:\n" + result_summary.stderr)
 
         except Exception as e:
-            logger.error(
-                f"Failed to execute plotter tool: {type(e).__name__}: {e}",
-                exc_info=True
-            )
+            logger.error(f"Failed to execute plotter tool: {type(e).__name__}: {e}", exc_info=True)
+            
         logger.info("--- Plot generation finished ---")
 
 
 if __name__ == "__main__":
-    main_cli()
+    main_cli() 

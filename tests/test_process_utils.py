@@ -1,8 +1,9 @@
 import pytest
 from pathlib import Path
 
-from mymonitor.data_models import AppConfig, RuleConfig, MonitorConfig
-from mymonitor.process_utils import get_process_category, plan_cpu_allocation
+from mymonitor.models import AppConfig, RuleConfig, MonitorConfig
+from mymonitor.classification import get_process_category
+from mymonitor.system import plan_cpu_allocation
 
 # --- Fixture for Mocking Configuration ---
 

@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 import psutil
 
-from ..data_models import ErrorSeverity, handle_error
+from ..validation import ErrorSeverity, handle_error
 from .shared_state import RuntimeState, TimeoutConstants
 
 logger = logging.getLogger(__name__)

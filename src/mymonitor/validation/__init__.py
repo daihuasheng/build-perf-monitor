@@ -18,6 +18,25 @@ from .exceptions import (
     validate_and_handle_error,
 )
 
+# Advanced error handling strategies
+from .strategies import (
+    CircuitBreaker,
+    CircuitBreakerConfig,
+    CircuitBreakerState,
+    ErrorRecoveryStrategy,
+    RetryConfig,
+    RetryHandler,
+    RetryStrategy,
+    TimeoutConfig,
+    create_file_operation_strategy,
+    create_monitoring_operation_strategy,
+    create_network_operation_strategy,
+    create_process_operation_strategy,
+    get_error_recovery_strategy,
+    register_error_recovery_strategy,
+    with_error_recovery,
+)
+
 # Validation functions
 from .validators import (
     validate_command_template,
@@ -43,6 +62,22 @@ __all__ = [
     "handle_file_error", 
     "handle_subprocess_error",
     "validate_and_handle_error",
+    # Advanced error handling strategies
+    "CircuitBreaker",
+    "CircuitBreakerConfig",
+    "CircuitBreakerState",
+    "ErrorRecoveryStrategy",
+    "RetryConfig",
+    "RetryHandler",
+    "RetryStrategy",
+    "TimeoutConfig",
+    "create_file_operation_strategy",
+    "create_monitoring_operation_strategy",
+    "create_network_operation_strategy",
+    "create_process_operation_strategy",
+    "get_error_recovery_strategy",
+    "register_error_recovery_strategy",
+    "with_error_recovery",
     # Validators
     "validate_command_template",
     "validate_cpu_core_range",

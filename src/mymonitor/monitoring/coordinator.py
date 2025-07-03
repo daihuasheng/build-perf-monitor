@@ -12,10 +12,12 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
+from ..classification import get_process_category
 from ..models.results import MonitoringResults
 from ..models.runtime import RunContext
-from ..memory_collectors.base import AbstractMemoryCollector
+from ..collectors.base import AbstractMemoryCollector
 from ..validation import handle_error, ErrorSeverity
+from ..config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -199,16 +201,35 @@ class MonitoringCoordinator:
                     try:
                         message = input_queue.get_nowait()
                         if message['action'] == 'start':
-                            # Initialize collector
+                            # Initialize and start collector
                             collector = self._create_collector(
                                 message['collector_type'], 
                                 message['process_pattern']
                             )
-                            monitoring_active = True
-                            logger.debug(f"Worker {core_id}: Started monitoring")
+                            # Set build process PID if provided
+                            if 'build_pid' in message:
+                                collector.build_process_pid = message['build_pid']
+                            
+                            # Start the collector - this is critical!
+                            try:
+                                collector.start()
+                                monitoring_active = True
+                                logger.debug(f"Worker {core_id}: Started monitoring with collector {message['collector_type']}")
+                            except Exception as e:
+                                logger.error(f"Worker {core_id}: Failed to start collector: {e}")
+                                collector = None
+                                monitoring_active = False
                             
                         elif message['action'] == 'stop':
                             monitoring_active = False
+                            # Stop the collector properly if it exists
+                            if collector:
+                                try:
+                                    collector.stop(timeout=5.0)
+                                    logger.debug(f"Worker {core_id}: Collector stopped")
+                                except Exception as e:
+                                    logger.warning(f"Worker {core_id}: Error stopping collector: {e}")
+                            
                             # Send results back
                             output_queue.put({'samples': samples})
                             logger.debug(f"Worker {core_id}: Stopped monitoring, sent {len(samples)} samples")
@@ -221,19 +242,36 @@ class MonitoringCoordinator:
                     if monitoring_active and collector:
                         try:
                             # Use read_samples which is a generator, get one batch
+                            sample_collected = False
                             for sample_batch in collector.read_samples():
                                 if sample_batch:
-                                    # Convert ProcessMemorySample objects to dictionaries
+                                    # Convert ProcessMemorySample objects to dictionaries with classification
+                                    epoch = time.time()
                                     for sample in sample_batch:
+                                        # Classify the process using the classification system
+                                        major_cat, minor_cat = get_process_category(
+                                            sample.command_name, sample.full_command
+                                        )
+                                        
                                         sample_dict = {
+                                            'epoch': epoch,
                                             'pid': sample.pid,
                                             'command_name': sample.command_name,
                                             'full_command': sample.full_command,
+                                            'major_category': major_cat,
+                                            'minor_category': minor_cat,
                                             'timestamp': time.time(),
                                             **sample.metrics
                                         }
                                         samples.append(sample_dict)
+                                    sample_collected = True
+                                    logger.debug(f"Worker {core_id}: Collected {len(sample_batch)} samples")
                                 break  # Only get one batch per iteration
+                            
+                            # If no samples were collected, log this periodically
+                            if not sample_collected and len(samples) % 10 == 0:
+                                logger.debug(f"Worker {core_id}: No samples collected in this iteration")
+                                
                         except Exception as e:
                             logger.warning(f"Worker {core_id}: Data collection error: {e}")
                     
@@ -252,6 +290,12 @@ class MonitoringCoordinator:
         except Exception as e:
             logger.error(f"Worker {core_id}: Fatal error: {e}")
         finally:
+            # Ensure collector is properly stopped
+            if collector:
+                try:
+                    collector.stop(timeout=2.0)
+                except Exception as e:
+                    logger.warning(f"Worker {core_id}: Error in final collector cleanup: {e}")
             logger.debug(f"Worker {core_id}: Exiting")
     
     def _create_collector(self, collector_type: str, process_pattern: str) -> AbstractMemoryCollector:
@@ -265,12 +309,38 @@ class MonitoringCoordinator:
         Returns:
             Memory collector instance
         """
+        # Get app config for collector-specific settings
+        try:
+            app_config = get_config()
+            # Extract collector mode for psutil collectors
+            pss_collector_mode = getattr(app_config.monitor, 'pss_collector_mode', 'full_scan')
+        except Exception:
+            # Fallback to defaults if config is not available
+            pss_collector_mode = 'full_scan'
+        
+        # Common kwargs for all collectors
+        collector_kwargs = {
+            'collector_cpu_core': self.run_context.monitor_core_id,
+            'taskset_available': self.run_context.taskset_available,
+        }
+        
         if collector_type == "pss_psutil":
-            from ..memory_collectors.pss_psutil_collector import PssPsutilCollector
-            return PssPsutilCollector(process_pattern, self.run_context.monitoring_interval)
+            from ..collectors.pss_psutil import PssPsutilCollector
+            collector_kwargs['mode'] = pss_collector_mode
+            return PssPsutilCollector(
+                process_pattern, 
+                self.run_context.monitoring_interval,
+                **collector_kwargs
+            )
         elif collector_type == "rss_pidstat":
-            from ..memory_collectors.rss_pidstat_collector import RssPidstatCollector  
-            return RssPidstatCollector(process_pattern, self.run_context.monitoring_interval)
+            from ..collectors.rss_pidstat import RssPidstatCollector
+            # Add pidstat-specific parameters
+            collector_kwargs['pidstat_stderr_file'] = self.run_context.paths.collector_aux_log_file
+            return RssPidstatCollector(
+                process_pattern, 
+                self.run_context.monitoring_interval,
+                **collector_kwargs
+            )
         else:
             raise ValueError(f"Unknown collector type: {collector_type}")
     
@@ -294,14 +364,67 @@ class MonitoringCoordinator:
                 category_pid_set={}
             )
         
-        # For now, return a basic aggregation
-        # In a full implementation, this would do sophisticated analysis
+        # Determine primary metric field (prefer PSS_KB, fall back to RSS_KB)
+        primary_metric = "PSS_KB" if "PSS_KB" in all_samples[0] else "RSS_KB"
+        
+        # Group samples by epoch for aggregation
+        epoch_groups = {}
+        for sample in all_samples:
+            epoch = sample['epoch']
+            if epoch not in epoch_groups:
+                epoch_groups[epoch] = []
+            epoch_groups[epoch].append(sample)
+        
+        # Find peak overall memory and calculate category statistics
+        peak_overall_memory_kb = 0
+        peak_overall_memory_epoch = 0
+        category_peak_sum = {}
+        category_pid_set = {}
+        
+        for epoch, samples in epoch_groups.items():
+            # Calculate total memory for this epoch
+            epoch_total_memory = sum(sample.get(primary_metric, 0) for sample in samples)
+            
+            if epoch_total_memory > peak_overall_memory_kb:
+                peak_overall_memory_kb = epoch_total_memory
+                peak_overall_memory_epoch = int(epoch)
+            
+            # Group by category for this epoch
+            category_memory = {}
+            for sample in samples:
+                major_cat = sample.get('major_category', 'Unknown')
+                minor_cat = sample.get('minor_category', 'Unknown')
+                category = f"{major_cat}:{minor_cat}"
+                
+                memory_val = sample.get(primary_metric, 0)
+                if category not in category_memory:
+                    category_memory[category] = 0
+                category_memory[category] += memory_val
+                
+                # Track PIDs for each category
+                if category not in category_pid_set:
+                    category_pid_set[category] = set()
+                category_pid_set[category].add(sample['pid'])
+            
+            # Update peak values for each category
+            for category, memory in category_memory.items():
+                if category not in category_peak_sum or memory > category_peak_sum[category]:
+                    category_peak_sum[category] = memory
+        
+        # Create category stats (simplified version)
+        category_stats = {}
+        for category in category_peak_sum:
+            category_stats[category] = {
+                'peak_memory_kb': category_peak_sum[category],
+                'pid_count': len(category_pid_set[category])
+            }
+        
         return MonitoringResults(
             all_samples_data=all_samples,
-            category_stats={},
-            peak_overall_memory_kb=0,
-            peak_overall_memory_epoch=int(time.time()),
-            category_peak_sum={},
-            category_pid_set={}
+            category_stats=category_stats,
+            peak_overall_memory_kb=peak_overall_memory_kb,
+            peak_overall_memory_epoch=peak_overall_memory_epoch,
+            category_peak_sum=category_peak_sum,
+            category_pid_set=category_pid_set
         )
  

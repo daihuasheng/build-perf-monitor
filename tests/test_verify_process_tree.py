@@ -105,9 +105,11 @@ def test_verifier_success_case(setup_verifier_test_env: Path, monkeypatch, capsy
     Tests the success scenario where all build processes are descendants.
     The verifier tool should report that the 'descendants_only' mode is safe.
     """
-    # Force the config loader to use our temporary config file.
-    monkeypatch.setattr("mymonitor.config._CONFIG_FILE_PATH", setup_verifier_test_env)
-    monkeypatch.setattr("mymonitor.config._CONFIG", None)
+    # --- Test Setup: Monkeypatching ---
+    # Force the application's config loader to use our temporary config file.
+    monkeypatch.setattr("mymonitor.config.manager._CONFIG_FILE_PATH", setup_verifier_test_env)
+    # Force a reload of the config singleton to pick up the new path.
+    monkeypatch.setattr("mymonitor.config.manager._CONFIG", None)
 
     # Call the function directly and check its boolean return value instead
     # of expecting a SystemExit. The function is a library function, not a CLI entrypoint.
@@ -126,9 +128,11 @@ def test_verifier_failure_case(setup_verifier_test_env: Path, monkeypatch, capsy
     Tests the failure scenario where a detached process is created.
     The verifier tool should detect this "orphan" process and report failure.
     """
-    # Force the config loader to use our temporary config file.
-    monkeypatch.setattr("mymonitor.config._CONFIG_FILE_PATH", setup_verifier_test_env)
-    monkeypatch.setattr("mymonitor.config._CONFIG", None)
+    # --- Test Setup: Monkeypatching ---
+    # Force the application's config loader to use our temporary config file.
+    monkeypatch.setattr("mymonitor.config.manager._CONFIG_FILE_PATH", setup_verifier_test_env)
+    # Force a reload of the config singleton to pick up the new path.
+    monkeypatch.setattr("mymonitor.config.manager._CONFIG", None)
 
     is_safe = verify_project(project_name="FailureProject", parallelism=1)
 

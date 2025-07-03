@@ -3,8 +3,8 @@ from pathlib import Path
 import tomllib
 
 # Import the function to be tested and the necessary data models
-from mymonitor.process_utils import get_process_category
-from mymonitor.data_models import AppConfig, RuleConfig, MonitorConfig
+from mymonitor.classification import get_process_category
+from mymonitor.models import AppConfig, RuleConfig, MonitorConfig
 from mymonitor import config
 
 

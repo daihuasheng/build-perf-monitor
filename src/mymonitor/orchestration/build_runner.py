@@ -9,9 +9,10 @@ to specialized component classes.
 import logging
 from typing import Optional
 
-from .. import process_utils
-from ..data_models import MonitoringResults, handle_error, ErrorSeverity
-from ..memory_collectors.base import AbstractMemoryCollector
+from ..system import prepare_command_with_setup, run_command
+from ..models.results import MonitoringResults
+from ..validation import ErrorSeverity, handle_error
+from ..collectors.base import AbstractMemoryCollector
 from .build_configuration import BuildConfiguration
 from .log_manager import LogManager
 from .monitoring_orchestrator import MonitoringOrchestrator
@@ -149,11 +150,11 @@ class BuildRunner:
 
         logger.info("--- Executing Pre-build Clean Step ---")
         
-        final_clean_command, executable = process_utils.prepare_command_with_setup(
+        final_clean_command, executable = prepare_command_with_setup(
             clean_command_template, setup_command_template
         )
 
-        return_code, stdout, stderr = process_utils.run_command(
+        return_code, stdout, stderr = run_command(
             final_clean_command,
             self.state.run_context.project_dir,
             shell=True,
@@ -229,10 +230,10 @@ class BuildRunner:
 
         # Simplified factory logic for collector initialization
         if self.config.collector_type == "pss_psutil":
-            from ..memory_collectors.pss_psutil_collector import PssPsutilCollector
+            from ..collectors.pss_psutil import PssPsutilCollector
             collector_class = PssPsutilCollector
         elif self.config.collector_type == "rss_pidstat":
-            from ..memory_collectors.rss_pidstat_collector import RssPidstatCollector
+            from ..collectors.rss_pidstat import RssPidstatCollector
             collector_class = RssPidstatCollector
         else:
             raise ValueError(f"Unknown collector type: {self.config.collector_type}")

@@ -1,62 +1,67 @@
 """
 Build execution management.
 
-This module provides functionality to execute build processes with proper
-setup, monitoring coordination, and cleanup.
+This module provides classes for managing build process execution,
+including command preparation, process lifecycle management, and cleanup.
 """
 
 import logging
-import signal
+import os
 import subprocess
 import time
 from pathlib import Path
 from typing import Optional, Tuple
 
+from ..models.config import ProjectConfig
 from ..models.runtime import RunContext
-from ..system.commands import run_command, prepare_full_build_command
-from ..validation import handle_error, handle_subprocess_error, ErrorSeverity
+from ..system import prepare_full_build_command, run_command
+from ..validation import (
+    handle_error, 
+    handle_subprocess_error, 
+    ErrorSeverity,
+    get_error_recovery_strategy,
+    with_error_recovery
+)
 
 logger = logging.getLogger(__name__)
 
 
 class BuildExecutor:
     """
-    Manages the execution of build processes.
+    Manages build process execution with enhanced error handling.
     
-    This class handles the lifecycle of build process execution including
-    command preparation, process startup, monitoring coordination, and cleanup.
+    This class handles the preparation and execution of build commands,
+    including subprocess management and error recovery.
     """
     
-    def __init__(self, run_context: RunContext):
+    def __init__(self, run_context: RunContext, project_config: ProjectConfig):
         """
         Initialize the build executor.
         
         Args:
             run_context: Runtime context for the build execution
+            project_config: Project configuration with build templates
         """
         self.run_context = run_context
+        self.project_config = project_config
         self.build_process: Optional[subprocess.Popen] = None
         self.build_command: Optional[str] = None
-        self.shell_executable: Optional[str] = None
+        self.error_recovery_strategy = get_error_recovery_strategy("process_operations")
         
-    def prepare_build(self, taskset_prefix: str = "") -> None:
+    def prepare_build(self, build_command_prefix: str) -> None:
         """
-        Prepare the build command with all necessary components.
+        Prepare the build command with error recovery.
         
         Args:
-            taskset_prefix: CPU affinity prefix for build process
+            build_command_prefix: Prefix for the build command (e.g., taskset)
         """
         try:
-            # Prepare the complete build command
-            self.build_command, self.shell_executable = prepare_full_build_command(
-                main_command_template=self.run_context.project_config.build_command_template,
-                j_level=self.run_context.parallelism_level,
-                taskset_prefix=taskset_prefix,
-                setup_command=self.run_context.project_config.setup_command_template
+            self.build_command = self.error_recovery_strategy.execute(
+                self._prepare_build_command_internal,
+                build_command_prefix,
+                error_context="preparing build command",
+                logger_instance=logger
             )
-            
-            logger.info(f"Prepared build command: {self.build_command}")
-            
         except Exception as e:
             handle_error(
                 error=e,
@@ -66,225 +71,209 @@ class BuildExecutor:
                 logger=logger
             )
     
+    def _prepare_build_command_internal(self, build_command_prefix: str) -> str:
+        """Internal method for preparing build command."""
+        build_command, _ = prepare_full_build_command(
+            main_command_template=self.project_config.build_command_template,
+            j_level=self.run_context.parallelism_level,
+            taskset_prefix=build_command_prefix,
+            setup_command=self.project_config.setup_command_template
+        )
+        
+        # Update run context with actual build command
+        self.run_context.actual_build_command = build_command
+        
+        logger.info(f"Build command prepared: {build_command}")
+        return build_command
+    
+    @with_error_recovery("process_operations", "starting build process")
     def start_build(self) -> int:
         """
-        Start the build process.
+        Start the build process with error recovery.
         
         Returns:
             Process ID of the started build process
             
         Raises:
-            RuntimeError: If build preparation failed or process couldn't start
+            RuntimeError: If build command is not prepared or process fails to start
         """
         if not self.build_command:
-            raise RuntimeError("Build not prepared - call prepare_build() first")
+            raise RuntimeError("Build command not prepared - call prepare_build() first")
         
         try:
-            logger.info("Starting build process...")
-            
             # Start the build process
             self.build_process = subprocess.Popen(
                 self.build_command,
-                cwd=self.run_context.project_dir,
                 shell=True,
-                executable=self.shell_executable,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                cwd=self.run_context.project_dir,
                 bufsize=1,  # Line buffered
                 universal_newlines=True
             )
             
-            build_pid = self.build_process.pid
-            self.run_context.build_process_pid = build_pid
+            # Update run context with process PID
+            self.run_context.build_process_pid = self.build_process.pid
             
-            logger.info(f"Build process started with PID {build_pid}")
-            return build_pid
+            logger.info(f"Build process started with PID {self.build_process.pid}")
+            return self.build_process.pid
             
         except Exception as e:
             handle_subprocess_error(
                 error=e,
-                command=self.build_command or "unknown",
+                command=self.build_command,
                 reraise=True,
                 logger=logger
             )
             raise
     
-    def wait_for_completion(self, timeout: Optional[float] = None) -> Tuple[int, str]:
+    def wait_for_completion(self) -> Tuple[int, str]:
         """
         Wait for the build process to complete and capture output.
         
-        Args:
-            timeout: Maximum time to wait in seconds (None for no timeout)
-            
         Returns:
-            Tuple of (return_code, combined_output)
+            Tuple of (return_code, output_text)
             
         Raises:
-            RuntimeError: If no build process is running
-            subprocess.TimeoutExpired: If timeout is exceeded
+            RuntimeError: If build process is not running
         """
         if not self.build_process:
-            raise RuntimeError("No build process is running")
+            raise RuntimeError("Build process not started - call start_build() first")
         
         try:
-            logger.info("Waiting for build process to complete...")
-            
-            # Wait for process completion and capture output
-            stdout, stderr = self.build_process.communicate(timeout=timeout)
-            return_code = self.build_process.returncode
-            
-            # Combine stdout and stderr (stderr should be empty due to redirection)
-            combined_output = stdout or ""
-            if stderr:
-                combined_output += f"\n--- STDERR ---\n{stderr}"
-            
-            if return_code == 0:
-                logger.info(f"Build completed successfully (exit code: {return_code})")
-            else:
-                logger.warning(f"Build completed with errors (exit code: {return_code})")
-            
-            return return_code, combined_output
-            
-        except subprocess.TimeoutExpired as e:
-            logger.error(f"Build process timed out after {timeout} seconds")
-            self.terminate_build()
-            raise
+            # Use the error recovery strategy for the wait operation
+            return self.error_recovery_strategy.execute(
+                self._wait_for_completion_internal,
+                error_context="waiting for build completion",
+                logger_instance=logger
+            )
         except Exception as e:
             handle_error(
                 error=e,
-                context="waiting for build completion",
+                context="waiting for build process completion",
                 severity=ErrorSeverity.ERROR,
                 reraise=True,
                 logger=logger
             )
             raise
     
-    def terminate_build(self, grace_period: float = 10.0) -> None:
-        """
-        Terminate the build process gracefully with fallback to force kill.
-        
-        Args:
-            grace_period: Time to wait for graceful shutdown before force kill
-        """
-        if not self.build_process:
-            logger.debug("No build process to terminate")
-            return
+    def _wait_for_completion_internal(self) -> Tuple[int, str]:
+        """Internal method for waiting for build completion."""
+        # Type assertion since we've already checked that build_process is not None
+        assert self.build_process is not None
         
         try:
-            if self.build_process.poll() is None:  # Process is still running
-                logger.info(f"Terminating build process {self.build_process.pid}")
-                
-                # First, try graceful termination
-                self.build_process.terminate()
-                
-                try:
-                    # Wait for graceful shutdown
-                    self.build_process.wait(timeout=grace_period)
-                    logger.info("Build process terminated gracefully")
-                except subprocess.TimeoutExpired:
-                    # Force kill if graceful termination failed
-                    logger.warning("Graceful termination failed, force killing build process")
-                    self.build_process.kill()
-                    self.build_process.wait(timeout=5.0)
-                    logger.info("Build process force killed")
-            else:
-                logger.debug("Build process already terminated")
-                
+            # Wait for process to complete and capture output
+            stdout, stderr = self.build_process.communicate()
+            return_code = self.build_process.returncode
+            
+            # Combine stdout and stderr
+            output = stdout or ""
+            if stderr:
+                output += f"\n--- STDERR ---\n{stderr}"
+            
+            logger.info(f"Build process completed with return code {return_code}")
+            return return_code, output
+            
         except Exception as e:
-            handle_error(
-                error=e,
-                context="terminating build process",
-                severity=ErrorSeverity.WARNING,
-                reraise=False,
-                logger=logger
-            )
+            # If communication fails, try to terminate the process
+            if self.build_process:
+                try:
+                    self.build_process.terminate()
+                    self.build_process.wait(timeout=5)
+                except (subprocess.TimeoutExpired, ProcessLookupError):
+                    try:
+                        self.build_process.kill()
+                    except ProcessLookupError:
+                        pass
+            raise
     
     def cleanup(self) -> None:
         """
-        Clean up build process resources.
+        Clean up build process resources with error recovery.
         """
         if self.build_process:
-            self.terminate_build()
+            try:
+                self.error_recovery_strategy.execute(
+                    self._cleanup_process,
+                    error_context="cleaning up build process",
+                    logger_instance=logger
+                )
+            except Exception as e:
+                handle_error(
+                    error=e,
+                    context="cleaning up build process",
+                    severity=ErrorSeverity.WARNING,
+                    reraise=False,
+                    logger=logger
+                )
+    
+    def _cleanup_process(self) -> None:
+        """Internal method for cleaning up build process."""
+        if self.build_process:
+            if self.build_process.poll() is None:
+                # Process is still running, terminate it
+                logger.info(f"Terminating build process {self.build_process.pid}")
+                self.build_process.terminate()
+                
+                # Wait for graceful termination
+                try:
+                    self.build_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    # Force kill if graceful termination fails
+                    logger.warning(f"Force killing build process {self.build_process.pid}")
+                    self.build_process.kill()
+                    self.build_process.wait(timeout=2)
+            
             self.build_process = None
-            self.run_context.build_process_pid = None
-        
-        logger.debug("Build executor cleanup completed")
-    
-    def is_running(self) -> bool:
-        """
-        Check if the build process is currently running.
-        
-        Returns:
-            True if build process is running, False otherwise
-        """
-        if not self.build_process:
-            return False
-        return self.build_process.poll() is None
-    
-    def get_pid(self) -> Optional[int]:
-        """
-        Get the process ID of the build process.
-        
-        Returns:
-            Build process PID or None if no process is running
-        """
-        if self.build_process:
-            return self.build_process.pid
-        return None
+            logger.debug("Build process cleanup completed")
 
 
 class BuildCleaner:
     """
-    Handles pre-build and post-build cleanup operations.
+    Manages build cleanup operations with enhanced error handling.
+    
+    This class handles pre-build and post-build cleanup operations
+    with intelligent error recovery.
     """
     
-    def __init__(self, run_context: RunContext):
+    def __init__(self, run_context: RunContext, project_config: ProjectConfig):
         """
         Initialize the build cleaner.
         
         Args:
-            run_context: Runtime context for the build
+            run_context: Runtime context for the cleanup operations
+            project_config: Project configuration with cleanup templates
         """
         self.run_context = run_context
-    
-    def pre_clean(self, skip_clean: bool = False) -> bool:
+        self.project_config = project_config
+        self.error_recovery_strategy = get_error_recovery_strategy("file_operations")
+        
+    def pre_clean(self, skip_pre_clean: bool = False) -> bool:
         """
-        Perform pre-build cleanup if configured and not skipped.
+        Execute pre-build cleanup with error recovery.
         
         Args:
-            skip_clean: Whether to skip the cleanup step
+            skip_pre_clean: Whether to skip the pre-clean step
             
         Returns:
-            True if cleanup was successful or skipped, False if cleanup failed
+            True if cleanup was successful, False if it failed
         """
-        if skip_clean:
-            logger.info("Pre-build cleanup skipped per request")
+        if skip_pre_clean:
+            logger.info("Skipping pre-build cleanup as requested")
             return True
         
-        clean_command = self.run_context.project_config.clean_command_template
-        if not clean_command or not clean_command.strip():
-            logger.info("No pre-build cleanup command configured")
+        if not self.project_config.clean_command_template:
+            logger.info("No clean command template defined, skipping pre-build cleanup")
             return True
         
         try:
-            logger.info(f"Running pre-build cleanup: {clean_command}")
-            
-            return_code, stdout, stderr = run_command(
-                command=clean_command.strip(),
-                cwd=self.run_context.project_dir,
-                shell=True
+            return self.error_recovery_strategy.execute(
+                self._execute_clean_command,
+                error_context="executing pre-build cleanup",
+                logger_instance=logger
             )
-            
-            if return_code == 0:
-                logger.info("Pre-build cleanup completed successfully")
-                return True
-            else:
-                logger.warning(f"Pre-build cleanup failed (exit code: {return_code})")
-                if stderr:
-                    logger.warning(f"Cleanup stderr: {stderr}")
-                return False
-                
         except Exception as e:
             handle_error(
                 error=e,
@@ -294,3 +283,36 @@ class BuildCleaner:
                 logger=logger
             )
             return False
+    
+    def _execute_clean_command(self) -> bool:
+        """Internal method for executing clean command."""
+        clean_command = self.project_config.clean_command_template
+        setup_command = self.project_config.setup_command_template
+        
+        # Prepare the full clean command
+        if setup_command:
+            full_command = f"{setup_command} && {clean_command}"
+        else:
+            full_command = clean_command
+        
+        logger.info(f"Executing clean command: {full_command}")
+        
+        # Execute the clean command
+        return_code, stdout, stderr = run_command(
+            command=full_command,
+            cwd=self.run_context.project_dir,
+            shell=True
+        )
+        
+        # Log the results
+        if return_code == 0:
+            logger.info("Clean command executed successfully")
+            if stdout:
+                logger.debug(f"Clean command stdout: {stdout}")
+            return True
+        else:
+            logger.warning(f"Clean command failed with return code {return_code}")
+            if stderr:
+                logger.warning(f"Clean command stderr: {stderr}")
+            return False
+ 
