@@ -110,3 +110,4 @@ class SignalHandler:
                     runner.state.shutdown_requested.set()
                 else:
                     logger.warning(f"BuildRunner {runner_id} does not have expected state structure")
+ 

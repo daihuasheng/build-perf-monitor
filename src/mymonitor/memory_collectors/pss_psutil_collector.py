@@ -117,7 +117,7 @@ class PssPsutilCollector(AbstractMemoryCollector):
         Starts the memory collection process with thread-safe state management.
 
         Sets internal flags to enable the `read_samples` loop and initializes timing.
-        
+
         Raises:
             RuntimeError: If the collector is already running.
         """
@@ -125,11 +125,11 @@ class PssPsutilCollector(AbstractMemoryCollector):
             if self._collecting:
                 raise RuntimeError("PssPsutilCollector is already running")
                 
-            logger.info(
+        logger.info(
                 f"Starting PssPsutilCollector (pattern: '{self.process_pattern}', "
                 f"interval: {self.monitoring_interval}s, mode: {self.mode})."
-            )
-            self._collecting = True
+        )
+        self._collecting = True
             self._stop_event.clear()  # Reset stop event in case of restart.
             self._start_time = time.monotonic()
 
@@ -156,7 +156,7 @@ class PssPsutilCollector(AbstractMemoryCollector):
             logger.info(f"Stopping PssPsutilCollector (timeout: {timeout}s)")
             
             # Set stop signals
-            self._collecting = False  # Indicate that collection should not proceed.
+        self._collecting = False  # Indicate that collection should not proceed.
             self._stop_event.set()  # Signal the loop in read_samples to exit.
             
             # Record stop time for statistics

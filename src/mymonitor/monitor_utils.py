@@ -31,7 +31,7 @@ class BuildRunner:
     This class maintains the original BuildRunner interface for backward compatibility
     while delegating all implementation to the new orchestration components.
     """
-    
+
     def __init__(
         self,
         project_config: ProjectConfig,

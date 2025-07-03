@@ -772,7 +772,7 @@ def main():
         import re
         if not re.match(r'^\d+[smhdw]$', args.resample_interval):
             logger.error(f"Invalid resample interval format '{args.resample_interval}'. Expected format: number followed by s/m/h/d/w (e.g., '10s', '1m').")
-            sys.exit(1)
+        sys.exit(1)
 
     # --- Dispatch to the correct mode ---
     if args.summary_plot:
