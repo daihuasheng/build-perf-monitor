@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.scripts]
-mymonitor = "mymonitor.main:main_cli"
+mymonitor = "mymonitor.cli.main:main_cli"
 
 [project.optional-dependencies]
 dev = [
