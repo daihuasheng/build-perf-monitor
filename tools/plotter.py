@@ -263,7 +263,7 @@ def _get_primary_metric_from_summary_log(data_filepath: Path) -> Optional[str]:
     if data_filepath.name.endswith("_summary.log"):
         return None
 
-    summary_log_path = data_filepath.with_name(f"{data_filepath.stem}_summary.log")
+    summary_log_path = data_filepath.parent / "summary.log"
     if not summary_log_path.exists():
         logger.warning(
             f"Could not find summary log: {summary_log_path} to determine primary metric. Falling back to RSS_KB."
@@ -525,92 +525,85 @@ def plot_memory_usage_from_data_file(data_filepath: Path, args: argparse.Namespa
             logger.warning(f"No data found in {data_filepath}. Skipping plot.")
             return
 
-        # Isolate per-process data, which is the basis for the plots.
-        df_per_process_pl = df_pl.filter(pl.col("Record_Type") == "PROCESS")
-        if df_per_process_pl.is_empty():
-            logger.warning(
-                f"No per-process data rows in {data_filepath.name}. Skipping."
-            )
-            return
-
+        # The 'Record_Type' column is no longer used; all data is per-process.
         # Combine major and minor categories into a single 'Category' column for plotting.
-        df_per_process_pl = df_per_process_pl.with_columns(
-            (pl.col("Major_Category") + "_" + pl.col("Minor_Category")).alias(
+        df_pl = df_pl.with_columns(
+            (pl.col("major_category") + "_" + pl.col("minor_category")).alias(
                 "Category"
             )
         )
 
         # Validate that all necessary columns are present.
-        required_cols = ["Timestamp_epoch", "Category", primary_metric_col]
-        if not all(col in df_per_process_pl.columns for col in required_cols):
-            missing = [c for c in required_cols if c not in df_per_process_pl.columns]
+        required_cols = ["epoch", "Category", primary_metric_col]
+        if not all(col in df_pl.columns for col in required_cols):
+            missing = [c for c in required_cols if c not in df_pl.columns]
             logger.error(
                 f"Data in {data_filepath} missing required columns: {missing}."
             )
             return
 
         # Ensure the metric column is numeric and filter out nulls.
-        df_per_process_pl = df_per_process_pl.with_columns(
+        df_pl = df_pl.with_columns(
             pl.col(primary_metric_col).cast(pl.Float64, strict=False)
         ).filter(pl.col(primary_metric_col).is_not_null())
 
-        if df_per_process_pl.is_empty():
+        if df_pl.is_empty():
             logger.warning(
                 f"No valid numeric data for '{primary_metric_col}' in {data_filepath.name}. Skipping."
             )
             return
 
         # Exclude categories marked as 'Ignored_'.
-        df_per_process_pl = df_per_process_pl.filter(
+        df_pl = df_pl.filter(
             ~pl.col("Category").str.starts_with("Ignored_")
         )
-        if df_per_process_pl.is_empty():
+        if df_pl.is_empty():
             logger.warning("No data after filtering ignored categories. Skipping.")
             return
 
         # --- Custom Filtering based on CLI arguments ---
         if args.category:
             logger.info(f"Filtering for user-specified categories: {args.category}")
-            df_per_process_pl = df_per_process_pl.filter(
+            df_pl = df_pl.filter(
                 pl.col("Category").is_in(args.category)
             )
         elif args.top_n:
             logger.info(f"Filtering for top {args.top_n} categories by peak memory.")
             top_categories = (
-                df_per_process_pl.group_by("Category")
+                df_pl.group_by("Category")
                 .agg(pl.col(primary_metric_col).max().alias("peak_mem"))
                 .sort("peak_mem", descending=True)
                 .head(args.top_n)["Category"]
                 .to_list()
             )
-            df_per_process_pl = df_per_process_pl.filter(
+            df_pl = df_pl.filter(
                 pl.col("Category").is_in(top_categories)
             )
         else:
             # Default behavior: filter for categories that meet a minimum total memory usage.
-            category_total_metric = df_per_process_pl.group_by("Category").agg(
+            category_total_metric = df_pl.group_by("Category").agg(
                 pl.col(primary_metric_col).sum().alias("total_metric")
             )
             significant_categories = category_total_metric.filter(
                 pl.col("total_metric") >= MIN_TOTAL_PRIMARY_METRIC_KB_FOR_PLOT
             )["Category"].to_list()
-            df_per_process_pl = df_per_process_pl.filter(
+            df_pl = df_pl.filter(
                 pl.col("Category").is_in(significant_categories)
             )
 
-        if df_per_process_pl.is_empty():
+        if df_pl.is_empty():
             logger.warning(
                 f"No data remains after filtering for {data_filepath.name}. Skipping plots."
             )
             return
 
         logger.info(
-            f"Plotting for categories: {df_per_process_pl['Category'].unique().to_list()}"
+            f"Plotting for categories: {df_pl['Category'].unique().to_list()}"
         )
 
         # Convert epoch seconds to a datetime object for time-series plotting.
-        df_plot_data_pl = df_per_process_pl.with_columns(
-            pl.from_epoch("Timestamp_epoch", time_unit="s").alias("Timestamp")
+        df_plot_data_pl = df_pl.with_columns(
+            pl.from_epoch("epoch", time_unit="s").alias("Timestamp")
         )
 
         # --- Resampling Interval Logic ---
@@ -791,7 +784,7 @@ def main():
 
     # --- Default Mode: Generate detailed plots ---
     logger.info(f"Searching for Parquet data files in: {args.log_dir}")
-    all_parquet_files = list(args.log_dir.glob("*.parquet"))
+    all_parquet_files = list(args.log_dir.glob("**/*.parquet"))
 
     if not all_parquet_files:
         logger.info(f"No Parquet data files found in {args.log_dir}.")

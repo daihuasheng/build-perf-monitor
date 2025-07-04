@@ -42,23 +42,26 @@ def plotter_test_env_factory(tmp_path: Path) -> Callable[[List[int]], Path]:
 
         for jobs in job_levels:
             timestamp = time.strftime("%Y%m%d_%H%M%S")
-            base_filename = f"test_project_j{jobs}_mem_pss_psutil_{timestamp}"
+            # Create a subdirectory for each parallelism level, mimicking the real app structure
+            run_specific_dir = log_dir / f"test_project_j{jobs}_mem_pss_psutil_{timestamp}"
+            run_specific_dir.mkdir(exist_ok=True)
 
             # --- Create a fake Parquet data file ---
+            # Corrected column name from "Timestamp_epoch" to "epoch" to match plotter expectations
             fake_data = {
-                "Timestamp_epoch": [1672531200, 1672531201],
-                "Record_Type": ["PROCESS", "ALL_SUM"],
-                "Major_Category": ["Compiler", "All"],
-                "Minor_Category": ["gcc", "All"],
-                "PSS_KB": [10000.0 * jobs, None],
-                "Sum_Value": [None, 10000.0 * jobs],
+                "epoch": [1672531200, 1672531201],
+                "major_category": ["Compiler", "All"],
+                "minor_category": ["gcc", "All"],
+                "PSS_KB": [10000.0 * jobs, 20000.0 * jobs],
             }
             df = pl.DataFrame(fake_data)
-            data_filepath = log_dir / f"{base_filename}.parquet"
+            # The data file is now inside the run-specific directory
+            data_filepath = run_specific_dir / "memory_samples.parquet"
             df.write_parquet(data_filepath)
 
             # --- Create a fake summary log file ---
-            summary_log_filepath = log_dir / f"{base_filename}_summary.log"
+            # The summary log is also inside the run-specific directory
+            summary_log_filepath = run_specific_dir / "summary.log"
             # Simulate that higher parallelism reduces build time but increases peak memory.
             duration = 100 / jobs
             peak_mem_kb = 15000 * jobs
@@ -106,7 +109,8 @@ def run_plotter_tool(
 def find_file_by_suffix(directory: Path, suffix: str) -> Path:
     """Helper to find the first file in a directory with a given suffix."""
     try:
-        return next(directory.glob(f"*{suffix}"))
+        # Search recursively in subdirectories
+        return next(directory.glob(f"**/*{suffix}"))
     except StopIteration:
         raise FileNotFoundError(f"No file with suffix '{suffix}' found in {directory}")
 
