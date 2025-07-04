@@ -459,9 +459,6 @@ class BuildRunner:
                     f.write("\n")
                 else:
                     f.write("No memory data collected.\n")
-                    
-                f.write("\n--- Build Output ---\n")
-                f.write(build_output)
             
             # Write build stdout log
             with open(output_dir / "build_stdout.log", 'w') as f:
