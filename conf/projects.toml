@@ -91,7 +91,7 @@ clean_command_template = "make clean"
 name = "gcc"
 
 # The directory where the build command should be executed.
-dir = "/host/gcc"
+dir = "/host/gcc/build"
 
 # Setup command for GCC build (configure step).
 # Note: This assumes a separate build directory. Adjust as needed.
