@@ -156,14 +156,21 @@ class BuildRunner:
         self.coordinator: Optional[MonitoringCoordinator] = None
         self.results: Optional[MonitoringResults] = None
         
-        # Signal handling
-        self._shutdown_requested = False
-        self._original_handlers = {}
-        
         # Build timing
         self.build_start_time: Optional[float] = None
         self.build_end_time: Optional[float] = None
         
+    def request_shutdown(self) -> None:
+        """
+        Requests a shutdown of the current running operations.
+        
+        This method is designed to be called from an external signal handler.
+        """
+        logger.info("Shutdown requested for the current build runner.")
+        # The _emergency_cleanup method contains the necessary logic to stop
+        # the coordinator and executor safely.
+        self._emergency_cleanup()
+
     def run(self) -> None:
         """
         Execute the complete build monitoring workflow.
@@ -172,13 +179,13 @@ class BuildRunner:
         through execution to cleanup and result collection.
         """
         try:
-            self._setup_signal_handlers()
             self._prepare_run()
             self._execute_monitoring()
             
         except KeyboardInterrupt:
-            logger.info("Monitoring interrupted by user")
-            self._shutdown_requested = True
+            logger.info("Monitoring interrupted by user (KeyboardInterrupt)")
+            # The global signal handler should now handle this,
+            # but this catch remains as a fallback.
         except Exception as e:
             handle_error(
                 error=e,
@@ -189,7 +196,6 @@ class BuildRunner:
             )
         finally:
             self._cleanup()
-            self._restore_signal_handlers()
     
     def get_results(self) -> Optional[MonitoringResults]:
         """
@@ -534,35 +540,4 @@ class BuildRunner:
             self.executor.cleanup()
         
         logger.debug("Cleanup completed")
-    
-    def _setup_signal_handlers(self) -> None:
-        """
-        Setup signal handlers for graceful shutdown.
-        """
-        def signal_handler(signum, frame):
-            logger.info(f"Received signal {signum}, initiating graceful shutdown...")
-            self._shutdown_requested = True
-            self._cleanup()
-        
-        # Store original handlers
-        self._original_handlers[signal.SIGINT] = signal.signal(signal.SIGINT, signal_handler)
-        self._original_handlers[signal.SIGTERM] = signal.signal(signal.SIGTERM, signal_handler)
-    
-    def _restore_signal_handlers(self) -> None:
-        """
-        Restore original signal handlers.
-        """
-        for sig, handler in self._original_handlers.items():
-            signal.signal(sig, handler)
-        self._original_handlers.clear()
-    
-    @property
-    def shutdown_requested(self) -> bool:
-        """
-        Check if shutdown has been requested.
-        
-        Returns:
-            True if shutdown was requested, False otherwise
-        """
-        return self._shutdown_requested
  
