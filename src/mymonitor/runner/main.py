@@ -440,10 +440,11 @@ class BuildRunner:
                 f.write(f"Total Build & Monitoring Duration: {build_duration:.1f}s ({build_duration:.2f} seconds)\n")
                 
                 if self.results:
-                    f.write(f"Peak Overall Memory ({metric_name}): {self.results.peak_overall_memory_kb} KB\n")
+                    peak_mem_gb = self.results.peak_overall_memory_kb / (1024 * 1024)
+                    f.write(f"Peak Overall Memory ({metric_name}): {peak_mem_gb:.2f} GB\n")
                     f.write(f"Samples Collected: {len(self.results.all_samples_data)}\n")
                 else:
-                    f.write(f"Peak Overall Memory ({metric_name}): 0 KB\n")
+                    f.write(f"Peak Overall Memory ({metric_name}): 0.00 GB\n")
                     f.write(f"Samples Collected: 0\n")
                 
                 f.write(f"Build Exit Code: {return_code}\n\n")

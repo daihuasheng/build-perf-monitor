@@ -74,7 +74,7 @@ def _parse_summary_log(filepath: Path) -> Optional[Dict[str, Any]]:
 
     Returns:
         A dictionary containing the parsed metrics (project, Parallelism,
-        Duration_sec, Peak_Memory_KB, and metric type) if all fields are
+        Duration_sec, Peak_Memory_GB, and metric type) if all fields are
         found, otherwise None.
     """
     try:
@@ -87,7 +87,7 @@ def _parse_summary_log(filepath: Path) -> Optional[Dict[str, Any]]:
             r"Total Build & Monitoring Duration:\s*.*?\((\d+\.\d+) seconds\)", content
         )
         peak_mem_match = re.search(
-            r"Peak Overall Memory \(([^)]+)\):\s*(\d+)\s*KB", content
+            r"Peak Overall Memory \(([^)]+)\):\s*([\d\.]+)\s*(GB|KB)", content
         )
 
         # Ensure all required pieces of information were successfully extracted.
@@ -98,12 +98,18 @@ def _parse_summary_log(filepath: Path) -> Optional[Dict[str, Any]]:
             assert duration_match is not None
             assert peak_mem_match is not None
             
+            # Parse memory and convert to GB if necessary
+            mem_val = float(peak_mem_match.group(2))
+            mem_unit = peak_mem_match.group(3)
+            if mem_unit == "KB":
+                mem_val /= (1024 * 1024) # Convert KB to GB
+            
             # Return a dictionary with standardized keys for DataFrame creation.
             return {
                 "project": project_match.group(1).strip(),
                 "Parallelism": int(jobs_match.group(1)),
                 "Duration_sec": float(duration_match.group(1)),
-                "Peak_Memory_KB": int(peak_mem_match.group(2)),
+                "Peak_Memory_GB": mem_val,
                 "metric": peak_mem_match.group(1),
             }
     except Exception as e:
@@ -122,7 +128,7 @@ def _create_summary_figure(
 
     Args:
         group_df: A pandas DataFrame containing the aggregated data for a
-                  single project, with columns 'Parallelism', 'Peak_Memory_KB',
+                  single project, with columns 'Parallelism', 'Peak_Memory_GB',
                   and 'Duration_sec'.
         project_name: The name of the project being plotted, used for the title.
         metric: The primary memory metric used (e.g., 'PSS_KB'), for axis labels.
@@ -139,10 +145,10 @@ def _create_summary_figure(
     fig.add_trace(
         go.Bar(
             x=group_df["Parallelism"],
-            y=group_df["Peak_Memory_KB"],
-            name="Peak Memory (KB)",
+            y=group_df["Peak_Memory_GB"],
+            name="Peak Memory (GB)",
             marker_color="indianred",
-            text=group_df["Peak_Memory_KB"].round(0),
+            text=group_df["Peak_Memory_GB"].round(2),
             textposition="auto",
         )
     )
@@ -170,7 +176,7 @@ def _create_summary_figure(
             tickfont=dict(size=12),
         ),
         yaxis=dict(
-            title_text=f"Peak Memory ({metric})",
+            title_text=f"Peak Memory ({metric.replace('_KB', '')}) (GB)",
             title_font=dict(size=14, color="indianred"),
             tickfont=dict(size=12, color="indianred"),
         ),

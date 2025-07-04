@@ -61,13 +61,14 @@ def plotter_test_env_factory(tmp_path: Path) -> Callable[[List[int]], Path]:
             summary_log_filepath = log_dir / f"{base_filename}_summary.log"
             # Simulate that higher parallelism reduces build time but increases peak memory.
             duration = 100 / jobs
-            peak_mem = 15000 * jobs
+            peak_mem_kb = 15000 * jobs
+            peak_mem_gb = peak_mem_kb / (1024 * 1024)
             summary_log_filepath.write_text(
                 f"Run Summary\n"
                 f"Project: test_project\n"
                 f"Parallelism: -j{jobs}\n"
                 f"Total Build & Monitoring Duration: {duration:.2f}s (some text) ({duration:.2f} seconds)\n"
-                f"Peak Overall Memory (PSS_KB): {peak_mem} KB\n"
+                f"Peak Overall Memory (PSS_KB): {peak_mem_gb:.2f} GB\n"
             )
         return log_dir
 

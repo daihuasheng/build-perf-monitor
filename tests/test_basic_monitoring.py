@@ -233,6 +233,7 @@ def test_basic_monitoring_run(setup_test_config_files: Path, monkeypatch, capsys
     summary_content = summary_log_file.read_text()
     assert "Build Exit Code: 0" in summary_content
     assert "Peak Overall Memory (PSS_KB):" in summary_content
+    assert " GB" in summary_content  # Verify memory is now in GB
     assert "Total Build & Monitoring Duration:" in summary_content
     assert "Project: FakeProject" in summary_content
     assert "Parallelism: -j1" in summary_content
