@@ -8,6 +8,7 @@ of memory data from build processes using the configured collector strategy.
 import logging
 import multiprocessing
 import queue
+import signal
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -268,6 +269,10 @@ def _monitoring_worker_static(core_id: int, input_queue: multiprocessing.Queue,
         output_queue: Queue for sending collected data
         run_context: Runtime context for the monitoring run
     """
+    # Make this worker process immune to SIGINT (Ctrl+C).
+    # The parent process is responsible for signaling a shutdown via the queue.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    
     # Create a new logger for this worker process
     worker_logger = logging.getLogger(f"mymonitor.monitoring.worker.{core_id}")
     
@@ -285,105 +290,86 @@ def _monitoring_worker_static(core_id: int, input_queue: multiprocessing.Queue,
         
         collector = None
         samples = []
-        monitoring_active = False
         
+        # Wait indefinitely for the initial 'start' message.
+        # This is a blocking call.
+        start_message = input_queue.get()
+        if start_message.get('action') != 'start':
+            worker_logger.warning(f"Worker {core_id}: Received non-start message. Exiting.")
+            return
+
+        # Initialize and start collector based on the message
+        try:
+            collector = _create_collector_static(
+                start_message['collector_type'], 
+                start_message['process_pattern'],
+                run_context
+            )
+            if 'build_pid' in start_message:
+                collector.build_process_pid = start_message['build_pid']
+            collector.start()
+            worker_logger.debug(f"Worker {core_id}: Started monitoring with collector {start_message['collector_type']}")
+        except Exception as e:
+            worker_logger.error(f"Worker {core_id}: Failed to start collector: {e}")
+            return # Exit if collector fails to start
+
+        # Main monitoring loop
         while True:
             try:
-                # Check for control messages
-                try:
-                    message = input_queue.get_nowait()
-                    if message['action'] == 'start':
-                        # Initialize and start collector
-                        collector = _create_collector_static(
-                            message['collector_type'], 
-                            message['process_pattern'],
-                            run_context
-                        )
-                        # Set build process PID if provided
-                        if 'build_pid' in message:
-                            collector.build_process_pid = message['build_pid']
-                        
-                        # Start the collector - this is critical!
-                        try:
-                            collector.start()
-                            monitoring_active = True
-                            worker_logger.debug(f"Worker {core_id}: Started monitoring with collector {message['collector_type']}")
-                        except Exception as e:
-                            worker_logger.error(f"Worker {core_id}: Failed to start collector: {e}")
-                            collector = None
-                            monitoring_active = False
-                        
-                    elif message['action'] == 'stop':
-                        monitoring_active = False
-                        # Stop the collector properly if it exists
-                        if collector:
-                            try:
-                                collector.stop(timeout=5.0)
-                                worker_logger.debug(f"Worker {core_id}: Collector stopped")
-                            except Exception as e:
-                                worker_logger.warning(f"Worker {core_id}: Error stopping collector: {e}")
-                        
-                        # Send results back
-                        output_queue.put({'samples': samples})
-                        worker_logger.debug(f"Worker {core_id}: Stopped monitoring, sent {len(samples)} samples")
-                        break
-                        
-                except queue.Empty:
-                    pass  # No control messages, continue monitoring
+                # Wait for a 'stop' message with a timeout equal to the monitoring interval.
+                # This replaces the old time.sleep() and makes the loop interruptible.
+                message = input_queue.get(block=True, timeout=run_context.monitoring_interval)
                 
-                # Collect data if monitoring is active
-                if monitoring_active and collector:
-                    try:
-                        # Use read_samples which is a generator, get one batch
-                        sample_collected = False
-                        for sample_batch in collector.read_samples():
-                            if sample_batch:
-                                # Convert ProcessMemorySample objects to dictionaries with classification
-                                epoch = time.time()
-                                for sample in sample_batch:
-                                    # Classify the process using the classification system
-                                    major_cat, minor_cat = get_process_category(
-                                        sample.command_name, sample.full_command
-                                    )
-                                    
-                                    sample_dict = {
-                                        'epoch': epoch,
-                                        'pid': sample.pid,
-                                        'command_name': sample.command_name,
-                                        'full_command': sample.full_command,
-                                        'major_category': major_cat,
-                                        'minor_category': minor_cat,
-                                        'timestamp': time.time(),
-                                        **sample.metrics
-                                    }
-                                    samples.append(sample_dict)
-                                sample_collected = True
-                                worker_logger.debug(f"Worker {core_id}: Collected {len(sample_batch)} samples")
-                            break  # Only get one batch per iteration
-                        
-                        # If no samples were collected, log this periodically
-                        if not sample_collected and len(samples) % 10 == 0:
-                            worker_logger.debug(f"Worker {core_id}: No samples collected in this iteration")
-                            
-                    except Exception as e:
-                        worker_logger.warning(f"Worker {core_id}: Data collection error: {e}")
-                
-                # Sleep for the monitoring interval
-                if monitoring_active:
-                    time.sleep(run_context.monitoring_interval)
+                if message.get('action') == 'stop':
+                    worker_logger.debug(f"Worker {core_id}: Stop message received.")
+                    break  # Exit loop to terminate.
                 else:
-                    time.sleep(0.1)  # Short sleep when not monitoring
-                    
-            except KeyboardInterrupt:
-                break
+                    worker_logger.warning(f"Worker {core_id}: Ignoring unexpected message: {message}")
+
+            except queue.Empty:
+                # This is the normal path for an active monitoring loop.
+                # The timeout expired, so it's time to collect a sample.
+                pass
+            
+            # Collect data
+            try:
+                sample_collected = False
+                for sample_batch in collector.read_samples():
+                    if sample_batch:
+                        epoch = time.time()
+                        for sample in sample_batch:
+                            major_cat, minor_cat = get_process_category(
+                                sample.command_name, sample.full_command
+                            )
+                            sample_dict = {
+                                'epoch': epoch,
+                                'pid': sample.pid,
+                                'command_name': sample.command_name,
+                                'full_command': sample.full_command,
+                                'major_category': major_cat,
+                                'minor_category': minor_cat,
+                                'timestamp': time.time(),
+                                **sample.metrics
+                            }
+                            samples.append(sample_dict)
+                        sample_collected = True
+                        worker_logger.debug(f"Worker {core_id}: Collected {len(sample_batch)} samples")
+                    break  # Only process one batch per interval
+                
+                if not sample_collected and len(samples) % 10 == 0:
+                     worker_logger.debug(f"Worker {core_id}: No samples collected in this iteration")
+
             except Exception as e:
-                worker_logger.error(f"Worker {core_id}: Unexpected error: {e}")
-                break
-        
+                worker_logger.warning(f"Worker {core_id}: Data collection error: {e}")
+
+        # After the loop has been broken, send results back.
+        output_queue.put({'samples': samples})
+        worker_logger.debug(f"Worker {core_id}: Stopped monitoring, sent {len(samples)} samples")
+
     except Exception as e:
-        worker_logger.error(f"Worker {core_id}: Fatal error: {e}")
+        worker_logger.error(f"Worker {core_id}: Fatal error in worker loop: {e}", exc_info=True)
     finally:
-        # Ensure collector is properly stopped
+        # Ensure collector is properly stopped, even if errors occurred.
         if collector:
             try:
                 collector.stop(timeout=2.0)
