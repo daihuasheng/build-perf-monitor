@@ -124,7 +124,8 @@ class MonitoringCoordinator:
             
             # Collect results from workers
             all_samples = []
-            timeout_seconds = 10.0
+            # Reduced timeout for faster shutdown, as workers should respond immediately.
+            timeout_seconds = 3.0
             
             for i in range(len(self.monitoring_processes)):
                 try:
@@ -136,11 +137,10 @@ class MonitoringCoordinator:
             
             # Wait for worker processes to finish
             for process in self.monitoring_processes:
-                process.join(timeout=5.0)
+                process.join(timeout=2.0)
                 if process.is_alive():
                     logger.warning(f"Force terminating monitoring process {process.name}")
                     process.terminate()
-                    process.join(timeout=2.0)
             
             self.monitoring_processes.clear()
             
