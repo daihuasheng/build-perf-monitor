@@ -198,3 +198,4 @@ class LogManager:
             logger.debug(f"Closed {closed_count} log files successfully")
         if failed_count > 0:
             logger.warning(f"Failed to close {failed_count} log files")
+ 

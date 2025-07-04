@@ -526,11 +526,16 @@ def plot_memory_usage_from_data_file(data_filepath: Path, args: argparse.Namespa
             return
 
         # The 'Record_Type' column is no longer used; all data is per-process.
-        # Combine major and minor categories into a single 'Category' column for plotting.
+        # Use major_category as the primary grouping for plotting (showing "big categories")
+        # Instead of combining major and minor categories, use only major_category
         df_pl = df_pl.with_columns(
-            (pl.col("major_category") + "_" + pl.col("minor_category")).alias(
-                "Category"
-            )
+            pl.col("major_category").alias("Category")
+        )
+
+        # Aggregate data by epoch and Category (major_category) since we now have
+        # multiple processes per major_category that need to be summed
+        df_pl = df_pl.group_by(["epoch", "Category"]).agg(
+            pl.col(primary_metric_col).sum().alias(primary_metric_col)
         )
 
         # Validate that all necessary columns are present.
@@ -775,7 +780,7 @@ def main():
         import re
         if not re.match(r'^\d+[smhdw]$', args.resample_interval):
             logger.error(f"Invalid resample interval format '{args.resample_interval}'. Expected format: number followed by s/m/h/d/w (e.g., '10s', '1m').")
-        sys.exit(1)
+            sys.exit(1)
 
     # --- Dispatch to the correct mode ---
     if args.summary_plot:
