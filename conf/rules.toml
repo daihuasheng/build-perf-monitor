@@ -71,6 +71,60 @@ match_type = "exact"
 pattern = "zellij"
 comment = "Ignore the Zellij terminal multiplexer process."
 
+[[rules]]
+major_category = "Ignored"
+category = "CursorEditor"
+priority = 997
+match_field = "current_cmd_name"
+match_type = "exact"
+pattern = "cursor"
+comment = "Ignore Cursor editor main process."
+
+[[rules]]
+major_category = "Ignored"
+category = "CursorNode"
+priority = 996
+match_field = "current_cmd_full"
+match_type = "regex"
+pattern = '.*cursor.*node'
+comment = "Ignore Cursor editor Node.js processes."
+
+[[rules]]
+major_category = "Ignored"
+category = "CursorElectron"
+priority = 995
+match_field = "current_cmd_full"
+match_type = "regex"
+pattern = '.*cursor.*electron'
+comment = "Ignore Cursor editor Electron processes."
+
+[[rules]]
+major_category = "Ignored"
+category = "CursorHelper"
+priority = 994
+match_field = "current_cmd_full"
+match_type = "regex"
+pattern = '.*cursor.*helper'
+comment = "Ignore Cursor editor helper processes."
+
+[[rules]]
+major_category = "Ignored"
+category = "CursorServer"
+priority = 993
+match_field = "current_cmd_full"
+match_type = "regex"
+pattern = '.*cursor.*server'
+comment = "Ignore Cursor editor server processes."
+
+[[rules]]
+major_category = "Ignored"
+category = "CursorGeneral"
+priority = 992
+match_field = "current_cmd_full"
+match_type = "regex"
+pattern = '.*[Cc]ursor.*'
+comment = "Ignore any Cursor-related processes (case-insensitive)."
+
 # Priority 150-250 (High - Unambiguous Processes)
 [[rules]]
 major_category = "BuildSystem"
