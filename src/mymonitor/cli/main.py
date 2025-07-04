@@ -9,6 +9,7 @@ monitoring runs across multiple projects and parallelism levels.
 import argparse
 import logging
 import multiprocessing
+import signal
 import subprocess
 import sys
 import time
@@ -53,6 +54,29 @@ def main_cli() -> None:
     Raises:
         SystemExit: On configuration errors, validation failures, or execution problems.
     """
+    # --- Global state for graceful shutdown ---
+    shutdown_requested = False
+    active_runner = None
+
+    def global_signal_handler(signum, frame):
+        """Handle signals globally to ensure a clean shutdown."""
+        nonlocal shutdown_requested, active_runner
+        if shutdown_requested:
+            logger.warning("Shutdown already in progress. Please be patient.")
+            return
+            
+        logger.info(f"Signal {signal.strsignal(signum)} received. Initiating graceful shutdown...")
+        shutdown_requested = True
+        
+        # If a runner is active, request it to shut down its components.
+        if active_runner:
+            logger.info("Requesting active build runner to shut down...")
+            active_runner.request_shutdown()
+
+    # Register the global signal handler for SIGINT and SIGTERM.
+    signal.signal(signal.SIGINT, global_signal_handler)
+    signal.signal(signal.SIGTERM, global_signal_handler)
+
     # Set the start method for multiprocessing to 'spawn' to ensure stability
     # across different platforms and avoid potential deadlocks with fork.
     try:
@@ -155,6 +179,10 @@ def main_cli() -> None:
 
     # Execute monitoring for each project and job level combination
     for project in projects_to_run:
+        if shutdown_requested:
+            logger.warning("Shutdown requested, skipping further projects.")
+            break
+        
         logger.info(f">>> Starting processing for project: {project.name}")
 
         # Check system dependencies
@@ -171,6 +199,10 @@ def main_cli() -> None:
 
         # Run monitoring for each parallelism level
         for j_level in jobs_to_run:
+            if shutdown_requested:
+                logger.warning(f"Shutdown requested, skipping further parallelism levels for project '{project.name}'.")
+                break
+                
             logger.info(f"--- Running with -j{j_level} ---")
             try:
                 runner = BuildRunner(
@@ -181,6 +213,7 @@ def main_cli() -> None:
                     collector_type=monitor_config.metric_type,
                     skip_pre_clean=args.no_pre_clean,
                 )
+                active_runner = runner
                 runner.run()
             except Exception as e:
                 logger.error(
@@ -188,13 +221,18 @@ def main_cli() -> None:
                     exc_info=True,
                 )
                 continue
+            finally:
+                active_runner = None # Clear the active runner reference
                 
         logger.info(f"<<< Finished processing for project: {project.name}")
 
-    logger.info("All specified build and monitoring tasks completed.")
+    if shutdown_requested:
+        logger.info("Build monitoring was terminated prematurely due to a shutdown request.")
+    else:
+        logger.info("All specified build and monitoring tasks completed.")
 
-    # Generate plots if not disabled
-    if not monitor_config.skip_plots:
+    # Generate plots if not disabled and if not shut down prematurely
+    if not monitor_config.skip_plots and not shutdown_requested:
         logger.info("--- Starting plot generation via external tool ---")
         try:
             # Find the plotter tool relative to the package
