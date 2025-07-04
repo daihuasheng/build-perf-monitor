@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Callable, List
+from typing import Callable, List, Optional
 
 import polars as pl
 import pytest
@@ -78,7 +78,7 @@ def plotter_test_env_factory(tmp_path: Path) -> Callable[[List[int]], Path]:
 
 
 def run_plotter_tool(
-    log_dir: Path, extra_args: list[str] = None
+    log_dir: Path, extra_args: Optional[list[str]] = None
 ) -> subprocess.CompletedProcess:
     """Helper function to execute the plotter.py script as a subprocess."""
     if extra_args is None:
@@ -114,7 +114,7 @@ def test_plotter_basic_run(plotter_test_env_factory: Callable[[List[int]], Path]
     """
     Tests the default behavior of the plotter tool for a single run.
     """
-    log_dir = plotter_test_env_factory(job_levels=[4])
+    log_dir = plotter_test_env_factory([4])
     result = run_plotter_tool(log_dir)
 
     assert result.returncode == 0, (
@@ -130,7 +130,7 @@ def test_plotter_filter_chart_type(
     """
     Tests the `--chart-type` argument.
     """
-    log_dir = plotter_test_env_factory(job_levels=[4])
+    log_dir = plotter_test_env_factory([4])
     result = run_plotter_tool(log_dir, extra_args=["--chart-type", "line"])
 
     assert result.returncode == 0
@@ -145,7 +145,7 @@ def test_plotter_filter_by_category(
     """
     Tests the `--category` filter.
     """
-    log_dir = plotter_test_env_factory(job_levels=[4])
+    log_dir = plotter_test_env_factory([4])
     result = run_plotter_tool(log_dir, extra_args=["--category", "Compiler_gcc"])
 
     assert result.returncode == 0
@@ -157,7 +157,7 @@ def test_plotter_filter_top_n(plotter_test_env_factory: Callable[[List[int]], Pa
     """
     Tests the `--top-n` filter.
     """
-    log_dir = plotter_test_env_factory(job_levels=[4])
+    log_dir = plotter_test_env_factory([4])
     result = run_plotter_tool(log_dir, extra_args=["--top-n", "1"])
 
     assert result.returncode == 0
@@ -188,7 +188,7 @@ def test_plotter_summary_plot_generation(
     from a single run and generate a single summary comparison plot.
     """
     # 1. Setup: Create an environment with data for multiple job levels
-    log_dir = plotter_test_env_factory(job_levels=[4, 8, 16])
+    log_dir = plotter_test_env_factory([4, 8, 16])
 
     # 2. Execution: Run the plotter with the --summary-plot flag
     result = run_plotter_tool(log_dir, extra_args=["--summary-plot"])
