@@ -55,57 +55,57 @@ def setup_test_config_files(tmp_path: Path):
         conf_dir = tmp_path / "conf"
         conf_dir.mkdir()
 
-    # Define paths for the config files.
-    config_file = conf_dir / "config.toml"
-    projects_file = conf_dir / "projects.toml"
-    rules_file = conf_dir / "rules.toml"
-    log_output_dir = tmp_path / "logs_output"
+        # Define paths for the config files.
+        config_file = conf_dir / "config.toml"
+        projects_file = conf_dir / "projects.toml"
+        rules_file = conf_dir / "rules.toml"
+        log_output_dir = tmp_path / "logs_output"
 
-    # --- Configuration Content ---
-    # Main config.toml content
-    config_content = {
-        "paths": {
-            "projects_config": str(projects_file),
-            "rules_config": str(rules_file),
-        },
-        "monitor": {
-            "general": {
-                "log_root_dir": str(log_output_dir),
-                "default_jobs": [1],
-                "skip_plots": True,
-                "categorization_cache_size": 128,
+        # --- Configuration Content ---
+        # Main config.toml content
+        config_content = {
+            "paths": {
+                "projects_config": str(projects_file),
+                "rules_config": str(rules_file),
             },
-            "collection": {
-                "metric_type": "pss_psutil",
-                "interval_seconds": 0.1,
-                "pss_collector_mode": "full_scan",
+            "monitor": {
+                "general": {
+                    "log_root_dir": str(log_output_dir),
+                    "default_jobs": [1],
+                    "skip_plots": True,
+                    "categorization_cache_size": 128,
+                },
+                "collection": {
+                    "metric_type": "pss_psutil",
+                    "interval_seconds": 0.1,
+                    "pss_collector_mode": "full_scan",
+                },
+                "scheduling": {
+                    "scheduling_policy": "adaptive",
+                    "monitor_core": 0,
+                    "manual_build_cores": "",
+                    "manual_monitoring_cores": "",
+                },
             },
-            "scheduling": {
-                "scheduling_policy": "adaptive",
-                "monitor_core": 0,
-                "manual_build_cores": "",
-                "manual_monitoring_cores": "",
-            },
-        },
-    }
+        }
 
-    # Projects projects.toml content
-    projects_content = {
-        "projects": [
-            {
-                "name": "FakeProject",
-                "dir": str(tmp_path),
-                "process_pattern": "fake_build_script.sh|sleep",
-                "setup_command_template": "echo 'Fake setup complete'",
-                "clean_command_template": "echo 'Fake clean complete'",
+        # Projects projects.toml content
+        projects_content = {
+            "projects": [
+                {
+                    "name": "FakeProject",
+                    "dir": str(tmp_path),
+                    "process_pattern": "fake_build_script.sh|sleep",
+                    "setup_command_template": "echo 'Fake setup complete'",
+                    "clean_command_template": "echo 'Fake clean complete'",
                     "build_command_template": f"{str(FAKE_BUILD_SCRIPT_PATH)} <N>",
-            }
-        ]
-    }
+                }
+            ]
+        }
 
-    # Rules rules.toml content
-    # Note: Case matters in the minor category.
-    rules_content = """
+        # Rules rules.toml content
+        # Note: Case matters in the minor category.
+        rules_content = """
 [[rules]]
 priority = 100
 major_category = "Scripting"
@@ -125,15 +125,15 @@ patterns = ["sleep"]
 comment = "Rule for the sleep command used in the test script."
 """
 
-    # --- Write Content to Files ---
-    with open(config_file, "w") as f:
-        toml.dump(config_content, f)
+        # --- Write Content to Files ---
+        with open(config_file, "w") as f:
+            toml.dump(config_content, f)
 
-    with open(projects_file, "w") as f:
-        toml.dump(projects_content, f)
+        with open(projects_file, "w") as f:
+            toml.dump(projects_content, f)
 
-    with open(rules_file, "w") as f:
-        f.write(rules_content)
+        with open(rules_file, "w") as f:
+            f.write(rules_content)
 
         yield config_file
     

@@ -151,11 +151,11 @@ def test_plotter_filter_by_category(
     Tests the `--category` filter.
     """
     log_dir = plotter_test_env_factory([4])
-    result = run_plotter_tool(log_dir, extra_args=["--category", "Compiler_gcc"])
+    result = run_plotter_tool(log_dir, extra_args=["--category", "Compiler"])
 
     assert result.returncode == 0
     assert find_file_by_suffix(log_dir, "_PSS_KB_lines_plot.html").exists()
-    assert "Filtering for user-specified categories: ['Compiler_gcc']" in result.stdout
+    assert "Filtering for user-specified categories: ['Compiler']" in result.stdout
 
 
 def test_plotter_filter_top_n(plotter_test_env_factory: Callable[[List[int]], Path]):
