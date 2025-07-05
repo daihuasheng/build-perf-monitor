@@ -22,3 +22,8 @@ dev = [
 export = [ # New group for optional export functionality
     "kaleido",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest-cov>=6.2.1",
+]
