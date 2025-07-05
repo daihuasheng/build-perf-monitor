@@ -207,6 +207,10 @@ class MonitoringCoordinator:
         category_peak_sum = {}
         category_pid_set = {}
         
+        # Track peak memory for each individual process
+        process_peak_memory = {}  # pid -> peak_memory
+        process_category_map = {}  # pid -> category
+        
         for epoch, samples in epoch_groups.items():
             # Calculate total memory for this epoch
             epoch_total_memory = sum(sample.get(primary_metric, 0) for sample in samples)
@@ -215,7 +219,7 @@ class MonitoringCoordinator:
                 peak_overall_memory_kb = epoch_total_memory
                 peak_overall_memory_epoch = int(epoch)
             
-            # Group by category for this epoch
+            # Group by category for this epoch and track individual process peaks
             category_memory = {}
             for sample in samples:
                 major_cat = sample.get('major_category', 'Unknown')
@@ -223,6 +227,14 @@ class MonitoringCoordinator:
                 category = f"{major_cat}:{minor_cat}"
                 
                 memory_val = sample.get(primary_metric, 0)
+                pid = sample['pid']
+                
+                # Track individual process peak memory
+                if pid not in process_peak_memory or memory_val > process_peak_memory[pid]:
+                    process_peak_memory[pid] = memory_val
+                process_category_map[pid] = category
+                
+                # Track category total memory for this epoch
                 if category not in category_memory:
                     category_memory[category] = 0
                 category_memory[category] += memory_val
@@ -232,16 +244,21 @@ class MonitoringCoordinator:
                     category_pid_set[category] = set()
                 category_pid_set[category].add(sample['pid'])
             
-            # Update peak values for each category
+            # Update peak values for each category (total for that category across all processes)
             for category, memory in category_memory.items():
                 if category not in category_peak_sum or memory > category_peak_sum[category]:
                     category_peak_sum[category] = memory
         
-        # Create category stats (simplified version)
+        # Create category stats with both total peak and individual process peak
         category_stats = {}
         for category in category_peak_sum:
+            # Find the peak memory of individual processes in this category
+            category_processes = [pid for pid, cat in process_category_map.items() if cat == category]
+            individual_peak_memory = max([process_peak_memory[pid] for pid in category_processes]) if category_processes else 0
+            
             category_stats[category] = {
-                'peak_memory_kb': category_peak_sum[category],
+                'peak_memory_kb': category_peak_sum[category],  # Total peak for category
+                'individual_peak_memory_kb': individual_peak_memory,  # Peak of single process in category
                 'pid_count': len(category_pid_set[category])
             }
         

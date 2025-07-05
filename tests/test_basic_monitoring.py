@@ -52,8 +52,8 @@ def setup_test_config_files(tmp_path: Path):
     os.environ["MYMONITOR_SKIP_PATH_VALIDATION"] = "1"
     
     try:
-    conf_dir = tmp_path / "conf"
-    conf_dir.mkdir()
+        conf_dir = tmp_path / "conf"
+        conf_dir.mkdir()
 
     # Define paths for the config files.
     config_file = conf_dir / "config.toml"

@@ -43,13 +43,15 @@ def _get_metric_name_from_collector_type(collector_type: str) -> str:
 
 
 def _format_category_stats(category_peak_sum: Dict[str, int], 
-                          category_pid_set: Dict[str, Set[str]]) -> str:
+                          category_pid_set: Dict[str, Set[str]],
+                          category_stats: Dict[str, Dict[str, Any]] = None) -> str:
     """
     Format category statistics for summary log with major/minor category grouping.
     
     Args:
         category_peak_sum: Dictionary mapping category to peak memory
         category_pid_set: Dictionary mapping category to set of PIDs
+        category_stats: Dictionary mapping category to detailed statistics
         
     Returns:
         Formatted string with category statistics
@@ -76,8 +78,15 @@ def _format_category_stats(category_peak_sum: Dict[str, int],
             }
         
         # Add to minor categories
+        individual_peak = 0
+        if category_stats and category in category_stats:
+            individual_peak = category_stats[category].get('individual_peak_memory_kb', peak_memory)
+        else:
+            individual_peak = peak_memory  # Fallback to total peak if no individual data
+            
         major_categories[major_cat]['minor_categories'][minor_cat] = {
-            'peak_memory': peak_memory,
+            'peak_memory': peak_memory,  # Total peak for this category
+            'individual_peak_memory': individual_peak,  # Peak of single process in this category
             'pid_count': len(category_pid_set.get(category, set()))
         }
         
@@ -108,8 +117,10 @@ def _format_category_stats(category_peak_sum: Dict[str, int],
         
         # Minor categories
         for minor_cat, minor_data in sorted_minor_cats:
-            output_lines.append(f"    {minor_cat}: {minor_data['peak_memory']} KB "
-                               f"({minor_data['pid_count']} pids)")
+            output_lines.append(
+                f"    {minor_cat}: {minor_data['peak_memory']} KB (total, {minor_data['pid_count']} pids), "
+                f"single process peak: {minor_data['individual_peak_memory']} KB"
+            )
     
     return '\n'.join(output_lines)
 
@@ -460,7 +471,8 @@ class BuildRunner:
                     f.write("--- Category Peak Memory Usage ---")
                     category_stats = _format_category_stats(
                         self.results.category_peak_sum,
-                        self.results.category_pid_set
+                        self.results.category_pid_set,
+                        self.results.category_stats
                     )
                     f.write(category_stats)
                     f.write("\n")
