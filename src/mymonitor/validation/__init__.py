@@ -1,45 +1,42 @@
 """
 Validation and error handling for the mymonitor package.
 
-This module provides input validation, error handling, and exception management
+This module provides simplified input validation and error handling
 with consistent error reporting across the application.
 """
 
-# Exception classes
+# Core exception classes and error handling
 from .exceptions import (
     ErrorSeverity,
     ValidationError,
-    ValidationSeverity,
-    handle_cli_error,
-    handle_config_error,
+    ValidationSeverity,  # Legacy compatibility
     handle_error,
+    handle_config_error,
     handle_file_error,
     handle_subprocess_error,
+    handle_cli_error,
     validate_and_handle_error,
+    validate_with_handler,
 )
 
-# Advanced error handling strategies
+# Simplified error handling strategies
 from .strategies import (
-    CircuitBreaker,
-    CircuitBreakerConfig,
-    CircuitBreakerState,
-    ErrorRecoveryStrategy,
-    RetryConfig,
-    RetryHandler,
-    RetryStrategy,
-    TimeoutConfig,
+    simple_retry,
+    with_simple_retry,
+    SimpleRetryStrategy,
+    get_error_recovery_strategy,
+    with_error_recovery,
     create_file_operation_strategy,
     create_monitoring_operation_strategy,
     create_network_operation_strategy,
     create_process_operation_strategy,
-    get_error_recovery_strategy,
     register_error_recovery_strategy,
-    with_error_recovery,
 )
 
 # Validation functions
 from .validators import (
     validate_command_template,
+    validate_simple_command,
     validate_cpu_core_range,
     validate_enum_choice,
     validate_jobs_list,
@@ -51,35 +48,31 @@ from .validators import (
 )
 
 __all__ = [
-    # Exception classes
+    # Core functionality
     "ErrorSeverity",
     "ValidationError", 
     "ValidationSeverity",
-    # Error handlers
-    "handle_cli_error",
-    "handle_config_error",
     "handle_error",
+    "handle_config_error",
     "handle_file_error", 
     "handle_subprocess_error",
+    "handle_cli_error",
     "validate_and_handle_error",
-    # Advanced error handling strategies
-    "CircuitBreaker",
-    "CircuitBreakerConfig",
-    "CircuitBreakerState",
-    "ErrorRecoveryStrategy",
-    "RetryConfig",
-    "RetryHandler",
-    "RetryStrategy",
-    "TimeoutConfig",
+    "validate_with_handler",
+    # Simplified strategies
+    "simple_retry",
+    "with_simple_retry",
+    "SimpleRetryStrategy",
+    "get_error_recovery_strategy",
+    "with_error_recovery",
     "create_file_operation_strategy",
     "create_monitoring_operation_strategy",
     "create_network_operation_strategy",
     "create_process_operation_strategy",
-    "get_error_recovery_strategy",
     "register_error_recovery_strategy",
-    "with_error_recovery",
     # Validators
     "validate_command_template",
+    "validate_simple_command",
     "validate_cpu_core_range",
     "validate_enum_choice", 
     "validate_jobs_list",

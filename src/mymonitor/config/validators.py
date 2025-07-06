@@ -17,6 +17,7 @@ from ..validation import (
     validate_enum_choice,
     validate_regex_pattern,
     validate_command_template,
+    validate_simple_command,
     validate_project_name,
 )
 
@@ -161,7 +162,6 @@ def validate_projects_config(projects_data: List[Dict[str, Any]]) -> List[Projec
             # Validate build command template
             build_command = validate_command_template(
                 project_data.get("build_command_template", ""),
-                required_placeholders=["<N>"],  # Accept <N> format for backward compatibility
                 field_name=f"projects[{i}].build_command_template"
             )
             
@@ -174,14 +174,14 @@ def validate_projects_config(projects_data: List[Dict[str, Any]]) -> List[Projec
             # Validate optional command templates
             clean_command = project_data.get("clean_command_template", "")
             if clean_command:
-                clean_command = validate_command_template(
+                clean_command = validate_simple_command(
                     clean_command,
                     field_name=f"projects[{i}].clean_command_template"
                 )
             
             setup_command = project_data.get("setup_command_template", "")
             if setup_command:
-                setup_command = validate_command_template(
+                setup_command = validate_simple_command(
                     setup_command,
                     field_name=f"projects[{i}].setup_command_template"
                 )

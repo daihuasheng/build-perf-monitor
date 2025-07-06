@@ -1,145 +1,359 @@
 """
-Validation functions for input validation and data integrity checks.
+Simplified validation functions.
 
-This module contains all validation logic for user inputs, configuration values,
-and system constraints.
+This module provides essential validation functions without over-engineering,
+focusing on the validations that are actually used in the application.
 """
 
 import os
 import re
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Any, List, Union, Optional
 
 from .exceptions import ValidationError
 
 
 def validate_positive_integer(
-    value: Union[int, str],
+    value: Any, 
     min_value: int = 1,
     max_value: Optional[int] = None,
     field_name: str = "value"
 ) -> int:
     """
-    Validate that a value is a positive integer within specified bounds.
+    Validate that a value is a positive integer.
     
     Args:
-        value: The value to validate (int or string representation)
+        value: Value to validate
         min_value: Minimum allowed value (inclusive)
         max_value: Maximum allowed value (inclusive), None for no limit
-        field_name: Name of the field being validated (for error messages)
+        field_name: Name of the field being validated
         
     Returns:
-        The validated integer value
+        Validated integer value
         
     Raises:
         ValidationError: If validation fails
     """
     try:
-        if isinstance(value, str):
-            int_value = int(value.strip())
-        else:
-            int_value = int(value)
-    except (ValueError, TypeError) as e:
-        raise ValidationError(f"{field_name} must be a valid integer, got '{value}': {e}")
-    
-    if int_value < min_value:
-        raise ValidationError(f"{field_name} must be >= {min_value}, got {int_value}")
-    
-    if max_value is not None and int_value > max_value:
-        raise ValidationError(f"{field_name} must be <= {max_value}, got {int_value}")
-    
-    return int_value
+        int_value = int(value)
+        if int_value < min_value:
+            raise ValidationError(
+                f"{field_name} must be >= {min_value}, got {int_value}",
+                field_name=field_name,
+                value=value
+            )
+        if max_value is not None and int_value > max_value:
+            raise ValidationError(
+                f"{field_name} must be <= {max_value}, got {int_value}",
+                field_name=field_name,
+                value=value
+            )
+        return int_value
+    except (ValueError, TypeError):
+        raise ValidationError(
+            f"{field_name} must be a valid integer, got {value}",
+            field_name=field_name,
+            value=value
+        )
 
 
 def validate_positive_float(
-    value: Union[float, str],
+    value: Any, 
     min_value: float = 0.0,
     max_value: Optional[float] = None,
     field_name: str = "value"
 ) -> float:
     """
-    Validate that a value is a positive float within specified bounds.
+    Validate that a value is a positive float.
     
     Args:
-        value: The value to validate (float or string representation)
+        value: Value to validate
         min_value: Minimum allowed value (inclusive)
         max_value: Maximum allowed value (inclusive), None for no limit
-        field_name: Name of the field being validated (for error messages)
+        field_name: Name of the field being validated
         
     Returns:
-        The validated float value
+        Validated float value
         
     Raises:
         ValidationError: If validation fails
     """
     try:
-        if isinstance(value, str):
-            float_value = float(value.strip())
-        else:
-            float_value = float(value)
-    except (ValueError, TypeError) as e:
-        raise ValidationError(f"{field_name} must be a valid number, got '{value}': {e}")
-    
-    if float_value < min_value:
-        raise ValidationError(f"{field_name} must be >= {min_value}, got {float_value}")
-    
-    if max_value is not None and float_value > max_value:
-        raise ValidationError(f"{field_name} must be <= {max_value}, got {float_value}")
-    
-    return float_value
+        float_value = float(value)
+        if float_value < min_value:
+            raise ValidationError(
+                f"{field_name} must be >= {min_value}, got {float_value}",
+                field_name=field_name,
+                value=value
+            )
+        if max_value is not None and float_value > max_value:
+            raise ValidationError(
+                f"{field_name} must be <= {max_value}, got {float_value}",
+                field_name=field_name,
+                value=value
+            )
+        return float_value
+    except (ValueError, TypeError):
+        raise ValidationError(
+            f"{field_name} must be a valid number, got {value}",
+            field_name=field_name,
+            value=value
+        )
 
 
-def validate_path_exists(
-    path: Union[str, Path],
-    must_be_dir: bool = False,
-    must_be_file: bool = False,
-    check_readable: bool = True,
-    check_writable: bool = False,
-    field_name: str = "path"
-) -> Path:
+def validate_path_exists(path: Union[str, Path], field_name: str = "path") -> str:
     """
-    Validate that a path exists and meets specified criteria.
+    Validate that a path exists.
     
     Args:
-        path: The path to validate
-        must_be_dir: If True, path must be a directory
-        must_be_file: If True, path must be a file
-        check_readable: If True, check that path is readable
-        check_writable: If True, check that path is writable
-        field_name: Name of the field being validated (for error messages)
+        path: Path to validate
+        field_name: Name of the field being validated
         
     Returns:
-        The validated Path object
+        Validated path string
         
     Raises:
-        ValidationError: If validation fails
+        ValidationError: If path doesn't exist
     """
+    path_str = str(path)
+    if not os.path.exists(path_str):
+        raise ValidationError(
+            f"{field_name} does not exist: {path_str}",
+            field_name=field_name,
+            value=path_str
+        )
+    return path_str
+
+
+def validate_project_name(
+    name: str, 
+    existing_names: Optional[List[str]] = None,
+    field_name: str = "project_name"
+) -> str:
+    """
+    Validate project name format.
+    
+    Args:
+        name: Project name to validate
+        existing_names: List of existing project names (for uniqueness check)
+        field_name: Name of the field being validated
+        
+    Returns:
+        Validated project name
+        
+    Raises:
+        ValidationError: If name is invalid
+    """
+    if not name or not isinstance(name, str):
+        raise ValidationError(
+            f"{field_name} must be a non-empty string",
+            field_name=field_name,
+            value=name
+        )
+    
+    # Allow alphanumeric, underscore, hyphen
+    if not re.match(r'^[a-zA-Z0-9_-]+$', name):
+        raise ValidationError(
+            f"{field_name} must contain only alphanumeric characters, underscores, and hyphens: {name}",
+            field_name=field_name,
+            value=name
+        )
+    
+    # Check uniqueness if existing names provided
+    if existing_names and name in existing_names:
+        raise ValidationError(
+            f"{field_name} must be unique, '{name}' already exists",
+            field_name=field_name,
+            value=name
+        )
+    
+    return name
+
+
+def validate_command_template(template: str, field_name: str = "command_template", require_placeholder: bool = True) -> str:
+    """
+    Validate build command template format.
+    
+    Args:
+        template: Command template to validate
+        field_name: Name of the field being validated
+        require_placeholder: Whether to require a placeholder (for build commands)
+        
+    Returns:
+        Validated command template
+        
+    Raises:
+        ValidationError: If template is invalid
+    """
+    if not template or not isinstance(template, str):
+        raise ValidationError(
+            f"{field_name} must be a non-empty string",
+            field_name=field_name,
+            value=template
+        )
+    
+    # Check for required placeholder only if required (for build commands)
+    if require_placeholder and '{j_level}' not in template and '<N>' not in template:
+        raise ValidationError(
+            f"{field_name} must contain either '{{j_level}}' or '<N>' placeholder",
+            field_name=field_name,
+            value=template
+        )
+    
+    return template
+
+
+def validate_simple_command(command: str, field_name: str = "command") -> str:
+    """
+    Validate simple command format (no placeholders required).
+    
+    Args:
+        command: Command to validate
+        field_name: Name of the field being validated
+        
+    Returns:
+        Validated command
+        
+    Raises:
+        ValidationError: If command is invalid
+    """
+    return validate_command_template(command, field_name, require_placeholder=False)
+
+
+def validate_regex_pattern(pattern: str, field_name: str = "regex_pattern") -> str:
+    """
+    Validate regex pattern format.
+    
+    Args:
+        pattern: Regex pattern to validate
+        field_name: Name of the field being validated
+        
+    Returns:
+        Validated pattern
+        
+    Raises:
+        ValidationError: If pattern is invalid
+    """
+    if not pattern or not isinstance(pattern, str):
+        raise ValidationError(
+            f"{field_name} must be a non-empty string",
+            field_name=field_name,
+            value=pattern
+        )
+    
     try:
-        path_obj = Path(path).resolve()
-    except Exception as e:
-        raise ValidationError(f"{field_name} is not a valid path '{path}': {e}")
+        re.compile(pattern)
+    except re.error as e:
+        raise ValidationError(
+            f"{field_name} is not a valid regex pattern: {e}",
+            field_name=field_name,
+            value=pattern
+        )
     
-    if not path_obj.exists():
-        raise ValidationError(f"{field_name} does not exist: {path_obj}")
+    return pattern
+
+
+def validate_cpu_core_range(cores: str, field_name: str = "cpu_cores") -> str:
+    """
+    Validate CPU core range format.
     
-    if must_be_dir and not path_obj.is_dir():
-        raise ValidationError(f"{field_name} must be a directory: {path_obj}")
+    Args:
+        cores: CPU core range string (e.g., "0-3", "1,3,5-7")
+        field_name: Name of the field being validated
+        
+    Returns:
+        Validated core range string
+        
+    Raises:
+        ValidationError: If format is invalid
+    """
+    if not cores or not isinstance(cores, str):
+        raise ValidationError(
+            f"{field_name} must be a non-empty string",
+            field_name=field_name,
+            value=cores
+        )
     
-    if must_be_file and not path_obj.is_file():
-        raise ValidationError(f"{field_name} must be a file: {path_obj}")
+    # Basic format validation - allow numbers, commas, and hyphens
+    if not re.match(r'^[0-9,-]+$', cores):
+        raise ValidationError(
+            f"{field_name} must contain only numbers, commas, and hyphens: {cores}",
+            field_name=field_name,
+            value=cores
+        )
     
-    if check_readable and not os.access(path_obj, os.R_OK):
-        raise ValidationError(f"{field_name} is not readable: {path_obj}")
+    return cores
+
+
+def validate_jobs_list(
+    jobs: Union[int, List[int], str], 
+    field_name: str = "jobs",
+    min_jobs: int = 1,
+    max_jobs: int = 1024
+) -> List[int]:
+    """
+    Validate jobs list format.
     
-    if check_writable and not os.access(path_obj, os.W_OK):
-        raise ValidationError(f"{field_name} is not writable: {path_obj}")
+    Args:
+        jobs: Single job level, list of job levels, or comma-separated string
+        field_name: Name of the field being validated
+        min_jobs: Minimum allowed job level
+        max_jobs: Maximum allowed job level
+        
+    Returns:
+        Validated list of job levels
+        
+    Raises:
+        ValidationError: If format is invalid
+    """
+    # Handle string input (e.g., "8,16")
+    if isinstance(jobs, str):
+        jobs = jobs.strip()
+        if not jobs:
+            raise ValidationError(
+                f"{field_name} cannot be empty",
+                field_name=field_name,
+                value=jobs
+            )
+        
+        # Split by comma and convert to integers
+        try:
+            jobs_list = [int(j.strip()) for j in jobs.split(",")]
+        except ValueError:
+            raise ValidationError(
+                f"{field_name} must be comma-separated integers (e.g., '8,16')",
+                field_name=field_name,
+                value=jobs
+            )
+        jobs = jobs_list
     
-    return path_obj
+    if isinstance(jobs, int):
+        jobs = [jobs]
+    
+    if not isinstance(jobs, list) or not jobs:
+        raise ValidationError(
+            f"{field_name} must be a positive integer or non-empty list of positive integers",
+            field_name=field_name,
+            value=jobs
+        )
+    
+    validated_jobs = []
+    for i, job in enumerate(jobs):
+        validated_job = validate_positive_integer(
+            job, 
+            min_value=min_jobs,
+            max_value=max_jobs,
+            field_name=f"{field_name} item {i}"
+        )
+        validated_jobs.append(validated_job)
+    
+    return validated_jobs
 
 
 def validate_enum_choice(
-    value: str,
-    valid_choices: List[str],
+    value: Any, 
+    valid_choices: List[str] = None,
+    choices: List[str] = None,
     field_name: str = "value",
     case_sensitive: bool = True
 ) -> str:
@@ -147,259 +361,49 @@ def validate_enum_choice(
     Validate that a value is one of the allowed choices.
     
     Args:
-        value: The value to validate
-        valid_choices: List of valid choices
-        field_name: Name of the field being validated (for error messages)
+        value: Value to validate
+        valid_choices: List of allowed choices (legacy parameter name)
+        choices: List of allowed choices (new parameter name)
+        field_name: Name of the field being validated
         case_sensitive: Whether the comparison should be case-sensitive
         
     Returns:
-        The validated value (potentially normalized to match case)
+        Validated choice
         
     Raises:
-        ValidationError: If validation fails
+        ValidationError: If value is not in choices
     """
-    if not isinstance(value, str):
-        raise ValidationError(f"{field_name} must be a string, got {type(value).__name__}")
-    
-    if case_sensitive:
-        if value in valid_choices:
-            return value
-    else:
-        value_lower = value.lower()
-        for choice in valid_choices:
-            if choice.lower() == value_lower:
-                return choice  # Return the canonical case
-    
-    raise ValidationError(
-        f"{field_name} must be one of {valid_choices}, got '{value}'"
-    )
-
-
-def validate_regex_pattern(
-    pattern: str,
-    field_name: str = "pattern"
-) -> str:
-    """
-    Validate that a string is a valid regular expression pattern.
-    
-    Args:
-        pattern: The regex pattern to validate
-        field_name: Name of the field being validated (for error messages)
-        
-    Returns:
-        The validated pattern string
-        
-    Raises:
-        ValidationError: If the pattern is invalid
-    """
-    if not isinstance(pattern, str):
-        raise ValidationError(f"{field_name} must be a string, got {type(pattern).__name__}")
-    
-    try:
-        re.compile(pattern)
-    except re.error as e:
-        raise ValidationError(f"{field_name} is not a valid regex pattern '{pattern}': {e}")
-    
-    return pattern
-
-
-def validate_cpu_core_range(
-    core_str: str,
-    max_cores: Optional[int] = None,
-    field_name: str = "CPU core range"
-) -> str:
-    """
-    Validate a CPU core range string (e.g., "0-3", "1,3,5", "").
-    
-    Args:
-        core_str: The core range string to validate
-        max_cores: Maximum number of available cores (for range validation)
-        field_name: Name of the field being validated (for error messages)
-        
-    Returns:
-        The validated core range string
-        
-    Raises:
-        ValidationError: If the core range is invalid
-    """
-    if not isinstance(core_str, str):
-        raise ValidationError(f"{field_name} must be a string, got {type(core_str).__name__}")
-    
-    # Empty string is valid (means no specific assignment)
-    if not core_str.strip():
-        return core_str.strip()
-    
-    if max_cores is None:
-        max_cores = os.cpu_count() or 1
-    
-    try:
-        # Parse the core specification to validate it
-        cores = set()
-        for part in core_str.split(','):
-            part = part.strip()
-            if '-' in part:
-                # Range specification (e.g., "0-3")
-                start_str, end_str = part.split('-', 1)
-                start = int(start_str.strip())
-                end = int(end_str.strip())
-                if start > end:
-                    raise ValidationError(f"Invalid range in {field_name}: {part} (start > end)")
-                cores.update(range(start, end + 1))
-            else:
-                # Single core specification
-                cores.add(int(part))
-        
-        # Validate core numbers are within system limits
-        invalid_cores = [c for c in cores if c < 0 or c >= max_cores]
-        if invalid_cores:
-            raise ValidationError(
-                f"Invalid CPU cores in {field_name}: {invalid_cores}. "
-                f"Valid range is 0-{max_cores-1}"
-            )
-            
-    except ValueError as e:
-        raise ValidationError(f"Invalid {field_name} format '{core_str}': {e}")
-    
-    return core_str.strip()
-
-
-def validate_jobs_list(
-    jobs_str: str,
-    min_jobs: int = 1,
-    max_jobs: int = 1024,
-    field_name: str = "--jobs argument"
-) -> List[int]:
-    """
-    Validate and parse a jobs list string (e.g., "1,2,4,8").
-    
-    Args:
-        jobs_str: The jobs string to validate and parse
-        min_jobs: Minimum allowed job count
-        max_jobs: Maximum allowed job count
-        field_name: Name of the field being validated (for error messages)
-        
-    Returns:
-        List of validated job counts
-        
-    Raises:
-        ValidationError: If the jobs string is invalid
-    """
-    if not isinstance(jobs_str, str):
-        raise ValidationError(f"{field_name} must be a string, got {type(jobs_str).__name__}")
-    
-    if not jobs_str.strip():
-        raise ValidationError(f"{field_name} cannot be empty")
-    
-    try:
-        jobs = []
-        for part in jobs_str.split(','):
-            job_count = int(part.strip())
-            if job_count < min_jobs:
-                raise ValidationError(f"Job count {job_count} is below minimum {min_jobs}")
-            if job_count > max_jobs:
-                raise ValidationError(f"Job count {job_count} exceeds maximum {max_jobs}")
-            jobs.append(job_count)
-        
-        if not jobs:
-            raise ValidationError(f"{field_name} resulted in empty job list")
-        
-        # Remove duplicates while preserving order
-        seen = set()
-        unique_jobs = []
-        for job in jobs:
-            if job not in seen:
-                seen.add(job)
-                unique_jobs.append(job)
-        
-        return unique_jobs
-        
-    except ValueError as e:
-        raise ValidationError(f"Invalid {field_name} format '{jobs_str}': {e}")
-
-
-def validate_command_template(
-    template: str,
-    required_placeholders: Optional[List[str]] = None,
-    field_name: str = "command template"
-) -> str:
-    """
-    Validate a command template string for required placeholders.
-    
-    Args:
-        template: The command template to validate
-        required_placeholders: List of required placeholder names (e.g., ['<N>'])
-        field_name: Name of the field being validated (for error messages)
-        
-    Returns:
-        The validated template string
-        
-    Raises:
-        ValidationError: If the template is invalid
-    """
-    if not isinstance(template, str):
-        raise ValidationError(f"{field_name} must be a string, got {type(template).__name__}")
-    
-    if not template.strip():
-        raise ValidationError(f"{field_name} cannot be empty")
-    
-    if required_placeholders:
-        for placeholder in required_placeholders:
-            if placeholder not in template:
-                raise ValidationError(
-                    f"{field_name} must contain placeholder '{placeholder}'. "
-                    f"Template: '{template}'"
-                )
-    
-    # Basic shell injection detection (very simple)
-    dangerous_patterns = [';', '&&', '||', '`', '$(']
-    for pattern in dangerous_patterns:
-        if pattern in template:
-            # This is just a warning - we allow these but note the risk
-            pass
-    
-    return template.strip()
-
-
-def validate_project_name(
-    name: str,
-    existing_names: Optional[List[str]] = None,
-    field_name: str = "project name"
-) -> str:
-    """
-    Validate a project name for safety and uniqueness.
-    
-    Args:
-        name: The project name to validate
-        existing_names: List of existing project names (for uniqueness check)
-        field_name: Name of the field being validated (for error messages)
-        
-    Returns:
-        The validated project name
-        
-    Raises:
-        ValidationError: If the name is invalid
-    """
-    if not isinstance(name, str):
-        raise ValidationError(f"{field_name} must be a string, got {type(name).__name__}")
-    
-    if not name.strip():
-        raise ValidationError(f"{field_name} cannot be empty")
-    
-    name = name.strip()
-    
-    # Check for valid characters (alphanumeric, hyphens, underscores)
-    if not re.match(r'^[a-zA-Z0-9_-]+$', name):
+    # Handle both parameter names for compatibility
+    choice_list = valid_choices or choices
+    if choice_list is None:
         raise ValidationError(
-            f"{field_name} can only contain letters, numbers, hyphens, and underscores. "
-            f"Got: '{name}'"
+            f"No valid choices provided for {field_name}",
+            field_name=field_name,
+            value=value
         )
     
-    # Check length
-    if len(name) > 50:
-        raise ValidationError(f"{field_name} cannot be longer than 50 characters. Got: '{name}'")
+    # Convert value to string for comparison
+    str_value = str(value)
     
-    # Check uniqueness
-    if existing_names and name in existing_names:
-        raise ValidationError(f"{field_name} '{name}' already exists")
-    
-    return name
+    # Handle case sensitivity
+    if case_sensitive:
+        if str_value not in choice_list:
+            raise ValidationError(
+                f"{field_name} must be one of {choice_list}, got {value}",
+                field_name=field_name,
+                value=value
+            )
+        return str_value
+    else:
+        # Case insensitive comparison
+        lower_choices = [choice.lower() for choice in choice_list]
+        lower_value = str_value.lower()
+        if lower_value not in lower_choices:
+            raise ValidationError(
+                f"{field_name} must be one of {choice_list}, got {value}",
+                field_name=field_name,
+                value=value
+            )
+        # Return the original case from valid choices
+        index = lower_choices.index(lower_value)
+        return choice_list[index]

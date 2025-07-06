@@ -1,284 +1,159 @@
 """
-Exception handling and error management.
+Simplified exception handling and error management.
 
-This module provides centralized error handling infrastructure with
-consistent error management across all modules.
+This module provides essential error handling functionality without over-engineering,
+focusing on the patterns that are actually used throughout the application.
 """
 
 import logging
-import subprocess
-from pathlib import Path
-from typing import Any, Optional, Union
+from enum import Enum
+from typing import Any, Callable, Optional, TypeVar, Union
+
+logger = logging.getLogger(__name__)
+
+T = TypeVar('T')
 
 
-class ErrorSeverity:
-    """Define error severity levels for consistent error handling across all modules."""
-    CRITICAL = "critical"    # System failure, should exit
-    ERROR = "error"         # Operation failure, should log and potentially retry
-    WARNING = "warning"     # Unexpected but recoverable condition
-    DEBUG = "debug"         # Minor issue, for debugging purposes
-
-
-class ValidationSeverity:
-    """Define validation severity levels for different types of validation failures."""
-    ERROR = "error"        # Invalid input that should cause failure
-    WARNING = "warning"    # Questionable input that should log a warning
-    INFO = "info"         # Informative validation message
+class ErrorSeverity(Enum):
+    """Severity levels for error handling."""
+    DEBUG = "debug"
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+    CRITICAL = "critical"
 
 
 class ValidationError(Exception):
-    """Custom exception for validation failures."""
-    pass
+    """
+    Exception raised when validation fails.
+    
+    This is the main exception type used throughout the validation system.
+    """
+    
+    def __init__(self, message: str, field_name: Optional[str] = None, 
+                 value: Any = None, severity: ErrorSeverity = ErrorSeverity.ERROR):
+        super().__init__(message)
+        self.field_name = field_name
+        self.value = value
+        self.severity = severity
 
 
 def handle_error(
     error: Exception,
     context: str,
-    severity: str = ErrorSeverity.ERROR,
-    include_traceback: bool = True,
-    reraise: bool = False,
-    fallback_value: Any = None,
-    logger: Optional[logging.Logger] = None
-) -> Any:
-    """
-    Standardized error handling function for consistent error processing.
-    
-    Args:
-        error: The caught exception
-        context: Description of what operation was being performed
-        severity: Error severity level (use ErrorSeverity constants)
-        include_traceback: Whether to include full traceback in logs
-        reraise: Whether to re-raise the exception after logging
-        fallback_value: Value to return if not re-raising
-        logger: Optional logger instance; if None, uses root logger
-        
-    Returns:
-        fallback_value if reraise=False, otherwise raises the exception
-        
-    Raises:
-        The original exception if reraise=True
-    """
-    # Use provided logger or fall back to root logger
-    if logger is None:
-        logger = logging.getLogger(__name__)
-    
-    # Map severity to log levels
-    severity_to_level = {
-        ErrorSeverity.CRITICAL: logging.CRITICAL,
-        ErrorSeverity.ERROR: logging.ERROR,
-        ErrorSeverity.WARNING: logging.WARNING,
-        ErrorSeverity.DEBUG: logging.DEBUG,
-    }
-    
-    log_level = severity_to_level.get(severity, logging.ERROR)
-    error_type = type(error).__name__
-    
-    # Build error message
-    error_msg = f"{context}: {error_type}: {error}"
-    
-    # Log with appropriate level
-    if include_traceback and log_level >= logging.ERROR:
-        logger.log(log_level, error_msg, exc_info=True)
-    else:
-        logger.log(log_level, error_msg)
-    
-    # Re-raise or return fallback
-    if reraise:
-        raise error
-    return fallback_value
-
-
-def handle_file_error(
-    error: Exception,
-    file_path: Union[str, Path],
-    operation: str,
+    severity: Union[ErrorSeverity, str] = ErrorSeverity.ERROR,
     reraise: bool = True,
-    logger: Optional[logging.Logger] = None
-) -> Optional[bool]:
-    """
-    Specialized error handler for file operations.
-    
-    Args:
-        error: The file-related exception
-        file_path: Path to the file being operated on
-        operation: Description of the file operation (e.g., "reading", "writing")
-        reraise: Whether to re-raise the exception
-        logger: Optional logger instance
-        
-    Returns:
-        None if reraise=True, False if reraise=False
-    """
-    context = f"File {operation} operation on '{file_path}'"
-    
-    # Classify common file errors
-    if isinstance(error, FileNotFoundError):
-        severity = ErrorSeverity.ERROR
-    elif isinstance(error, PermissionError):
-        severity = ErrorSeverity.ERROR
-    elif isinstance(error, OSError):
-        severity = ErrorSeverity.ERROR
-    else:
-        severity = ErrorSeverity.WARNING
-    
-    return handle_error(
-        error=error,
-        context=context,
-        severity=severity,
-        include_traceback=True,
-        reraise=reraise,
-        fallback_value=False,
-        logger=logger
-    )
-
-
-def handle_subprocess_error(
-    error: Exception,
-    command: str,
-    reraise: bool = False,
-    logger: Optional[logging.Logger] = None
-) -> Optional[bool]:
-    """
-    Specialized error handler for subprocess operations.
-    
-    Args:
-        error: The subprocess-related exception
-        command: The command that was being executed
-        reraise: Whether to re-raise the exception
-        logger: Optional logger instance
-        
-    Returns:
-        None if reraise=True, False if reraise=False
-    """
-    context = f"Subprocess execution of command '{command[:100]}...'"
-    
-    # Classify subprocess errors
-    if isinstance(error, subprocess.TimeoutExpired):
-        severity = ErrorSeverity.WARNING
-    elif isinstance(error, subprocess.CalledProcessError):
-        severity = ErrorSeverity.ERROR
-    elif isinstance(error, FileNotFoundError):
-        severity = ErrorSeverity.ERROR
-    else:
-        severity = ErrorSeverity.WARNING
-    
-    return handle_error(
-        error=error,
-        context=context,
-        severity=severity,
-        include_traceback=True,
-        reraise=reraise,
-        fallback_value=False,
-        logger=logger
-    )
-
-
-def handle_config_error(
-    error: Exception,
-    context: str,
-    severity: str = ErrorSeverity.ERROR,
-    reraise: bool = True,
-    logger: Optional[logging.Logger] = None
-) -> Union[None, Any]:
-    """
-    Specialized error handler for configuration-related operations.
-    
-    Args:
-        error: The configuration-related exception
-        context: Description of the configuration operation
-        severity: Error severity level
-        reraise: Whether to re-raise the exception
-        logger: Optional logger instance
-        
-    Returns:
-        None if reraise=True, appropriate fallback if reraise=False
-    """
-    return handle_error(
-        error=error,
-        context=f"Configuration {context}",
-        severity=severity,
-        include_traceback=True,
-        reraise=reraise,
-        fallback_value=None,
-        logger=logger
-    )
-
-
-def handle_cli_error(
-    error: Exception,
-    context: str,
-    exit_code: int = 1,
-    include_traceback: bool = True,
     logger: Optional[logging.Logger] = None
 ) -> None:
     """
-    Specialized error handler for CLI operations that should exit the program.
+    Handle errors with consistent logging and optional re-raising.
     
     Args:
-        error: The CLI-related exception
-        context: Description of the CLI operation
-        exit_code: Exit code for the program
-        include_traceback: Whether to include traceback in error output
-        logger: Optional logger instance
+        error: The exception that occurred
+        context: Context description of where the error occurred
+        severity: Severity level for logging
+        reraise: Whether to re-raise the exception after logging
+        logger: Logger instance to use (defaults to module logger)
     """
-    import sys
+    effective_logger = logger or globals()['logger']
     
-    handle_error(
-        error=error,
-        context=f"CLI {context}",
-        severity=ErrorSeverity.CRITICAL,
-        include_traceback=include_traceback,
-        reraise=False,
-        logger=logger
-    )
+    error_msg = f"Error in {context}: {error}"
     
-    sys.exit(exit_code)
+    # Handle both enum and string severity values
+    if isinstance(severity, str):
+        severity_str = severity.lower()
+    else:
+        severity_str = severity.value
+    
+    # Log based on severity
+    if severity_str == "debug":
+        effective_logger.debug(error_msg, exc_info=True)
+    elif severity_str == "info":
+        effective_logger.info(error_msg)
+    elif severity_str == "warning":
+        effective_logger.warning(error_msg)
+    elif severity_str == "error":
+        effective_logger.error(error_msg)
+    elif severity_str == "critical":
+        effective_logger.critical(error_msg, exc_info=True)
+    
+    if reraise:
+        raise error
 
 
-def validate_and_handle_error(
-    validation_func,
-    *args,
-    severity: str = ValidationSeverity.ERROR,
-    logger: Optional[logging.Logger] = None,
-    **kwargs
-) -> Any:
+def validate_with_handler(
+    validation_func: Callable[[Any], T],
+    value: Any,
+    field_name: str,
+    context: str,
+    logger: Optional[logging.Logger] = None
+) -> T:
     """
-    Wrapper to handle validation errors with consistent error processing.
+    Validate a value with automatic error handling.
     
     Args:
-        validation_func: The validation function to call
-        *args: Positional arguments for the validation function
-        severity: Validation severity level
-        logger: Optional logger instance
-        **kwargs: Keyword arguments for the validation function
+        validation_func: Function to call for validation
+        value: Value to validate
+        field_name: Name of the field being validated
+        context: Context description for error messages
+        logger: Logger instance to use
         
     Returns:
         Result from validation_func if successful
         
     Raises:
-        ValidationError: If validation fails and severity is ERROR
+        ValidationError: If validation fails
     """
     try:
-        return validation_func(*args, **kwargs)
-    except ValidationError as e:
-        if severity == ValidationSeverity.ERROR:
-            handle_error(
-                error=e,
-                context="Validation",
-                severity=ErrorSeverity.ERROR,
-                reraise=True,
-                logger=logger
-            )
-        elif severity == ValidationSeverity.WARNING:
-            handle_error(
-                error=e,
-                context="Validation warning",
-                severity=ErrorSeverity.WARNING,
-                reraise=False,
-                logger=logger
-            )
-        else:  # INFO
-            if logger:
-                logger.info(f"Validation info: {e}")
-        
-        # Return None for non-ERROR severities
-        return None
+        return validation_func(value)
+    except ValidationError:
+        # Re-raise ValidationError as-is
+        raise
+    except Exception as e:
+        # Convert other exceptions to ValidationError
+        error_msg = f"Validation failed for {field_name} in {context}: {e}"
+        if logger:
+            logger.error(error_msg)
+        raise ValidationError(error_msg, field_name=field_name, value=value)
+
+
+# Convenience aliases for specific error types
+def handle_config_error(error: Exception, context: str, **kwargs) -> None:
+    """Handle configuration-related errors."""
+    handle_error(error, f"config {context}", **kwargs)
+
+
+def handle_file_error(error: Exception, context: str, **kwargs) -> None:
+    """Handle file-related errors."""
+    handle_error(error, f"file {context}", **kwargs)
+
+
+def handle_subprocess_error(error: Exception, command: str, **kwargs) -> None:
+    """Handle subprocess-related errors."""
+    handle_error(error, f"subprocess command '{command}'", **kwargs)
+
+
+def handle_cli_error(error: Exception, context: str, **kwargs) -> None:
+    """Handle CLI-related errors."""
+    # Extract exit_code and include_traceback from kwargs
+    exit_code = kwargs.pop('exit_code', 1)
+    include_traceback = kwargs.pop('include_traceback', False)
+    
+    # Handle the error with logging
+    severity = kwargs.get('severity', ErrorSeverity.ERROR)
+    handle_error(error, f"CLI {context}", severity=severity, reraise=False, **kwargs)
+    
+    # Exit with the specified code
+    import sys
+    sys.exit(exit_code)
+
+
+# Aliases for compatibility
+validate_and_handle_error = validate_with_handler
+
+# Legacy compatibility class
+class ValidationSeverity:
+    """Legacy compatibility class."""
+    ERROR = "error"
+    WARNING = "warning"
+    INFO = "info"
