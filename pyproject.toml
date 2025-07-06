@@ -15,15 +15,22 @@ dependencies = [
 mymonitor = "mymonitor.cli.main:main_cli"
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=7.0",
-    # You can add other dev tools here like linters (flake8, ruff), formatters (black)
-]
-export = [ # New group for optional export functionality
-    "kaleido",
+export = [
+    "kaleido",  # Optional export functionality for static plots
 ]
 
 [dependency-groups]
 dev = [
+    "pytest>=7.0",
     "pytest-cov>=6.2.1",
+    "ruff",      # Modern linter and formatter
+    "mypy",      # Type checking
+]
+test = [
+    "pytest>=7.0",
+    "pytest-cov>=6.2.1", 
+]
+lint = [
+    "ruff",      # Modern linter and formatter
+    "mypy",      # Type checking
 ]
