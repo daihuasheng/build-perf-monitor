@@ -9,5 +9,13 @@ wheels/
 # Virtual environments
 .venv
 
+# Testing and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Linting and formatting
+.ruff_cache/
+
 # logs
 logs/
