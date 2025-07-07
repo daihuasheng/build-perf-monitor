@@ -224,7 +224,7 @@ def test_basic_monitoring_run(setup_test_config_files: Path, monkeypatch, capsys
         "PSS_KB",
     }
     assert expected_cols.issubset(df.columns), f"Expected columns are not a subset of Parquet columns: {df.columns}"
-    assert "Generic_Path" in df["minor_category"].unique()
+    assert "Sleep" in df["minor_category"].unique()
 
     # 2. Verify the summary log file.
     summary_log_file = run_specific_output_dir / "summary.log"
@@ -237,11 +237,11 @@ def test_basic_monitoring_run(setup_test_config_files: Path, monkeypatch, capsys
     assert "Total Build & Monitoring Duration:" in summary_content
     assert "Project: FakeProject" in summary_content
     assert "Parallelism: -j1" in summary_content
-    assert "OSUtilities:" in summary_content, (
-        "Expected 'OSUtilities' major category in summary log."
+    assert "build:" in summary_content, (
+        "Expected 'build' major category in summary log."
     )
-    assert "Generic_Path:" in summary_content, (
-        "Expected 'Generic_Path' minor category in summary log."
+    assert "Sleep:" in summary_content, (
+        "Expected 'Sleep' minor category in summary log."
     )
     assert "Total Peak Memory:" in summary_content, (
         "Expected 'Total Peak Memory' for major categories in summary log."

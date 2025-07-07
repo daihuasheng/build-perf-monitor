@@ -23,8 +23,9 @@ export = [
 dev = [
     "pytest>=7.0",
     "pytest-cov>=6.2.1",
-    "ruff",      # Modern linter and formatter
-    "mypy",      # Type checking
+    "pytest-asyncio>=0.21.0",
+    "ruff", # Modern linter and formatter
+    "mypy", # Type checking
 ]
 test = [
     "pytest>=7.0",

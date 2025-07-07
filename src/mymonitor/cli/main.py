@@ -8,7 +8,7 @@ monitoring runs across multiple projects and parallelism levels.
 
 import argparse
 import logging
-import multiprocessing
+import asyncio
 import signal
 import subprocess
 import sys
@@ -16,7 +16,6 @@ import time
 from pathlib import Path
 
 from ..config import get_config
-from ..runner import BuildRunner
 from ..system.commands import check_pidstat_installed
 from ..validation import (
     handle_cli_error,
@@ -24,6 +23,7 @@ from ..validation import (
     validate_jobs_list,
     validate_project_name,
 )
+from .orchestrator import BuildRunner
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -77,15 +77,9 @@ def main_cli() -> None:
     signal.signal(signal.SIGINT, global_signal_handler)
     signal.signal(signal.SIGTERM, global_signal_handler)
 
-    # Set the start method for multiprocessing to 'spawn' to ensure stability
-    # across different platforms and avoid potential deadlocks with fork.
-    try:
-        multiprocessing.set_start_method("spawn", force=True)
-        logger.info("Set multiprocessing start method to 'spawn'.")
-    except RuntimeError:
-        # The context can only be set once. If it's already set, we can ignore the error.
-        logger.debug("Multiprocessing context already set.")
-        pass
+    # Since we're using AsyncIO instead of multiprocessing, we don't need
+    # to set the start method anymore
+    logger.info("Starting MyMonitor with AsyncIO architecture")
 
     # Load application configuration
     try:

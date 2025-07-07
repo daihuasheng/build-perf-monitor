@@ -386,3 +386,63 @@ class PssPsutilCollector(AbstractMemoryCollector):
         with self._collector_lock:
             self._stop_event.clear()
             logger.debug("Stop event cleared - collection fully stopped")
+
+    def _collect_single_sample(self) -> List[ProcessMemorySample]:
+        """
+        Collect a single batch of memory samples without the infinite loop.
+        
+        This method performs one round of sampling and returns immediately,
+        avoiding the infinite generator issue in read_samples().
+        
+        Returns:
+            List of ProcessMemorySample objects from current sampling
+        """
+        if not self._collecting:
+            logger.warning("Collector has not been started; cannot collect samples.")
+            return []
+        
+        current_samples: List[ProcessMemorySample] = []
+        
+        try:
+            # Use the same logic as read_samples() but without the infinite loop
+            if self.mode == "descendants_only" and self.build_process_pid:
+                # Fast path: Only scan descendants of the main build process
+                logger.debug(f"Using descendants_only mode for PID {self.build_process_pid}")
+                try:
+                    parent_proc = psutil.Process(self.build_process_pid)
+                    descendants = list(parent_proc.children(recursive=True))
+                    logger.debug(f"Found {len(descendants)} descendants of build process")
+                    
+                    for p in itertools.chain([parent_proc], descendants):
+                        if self._stop_event.is_set():
+                            break
+                        sample = self._get_sample_for_process(p)
+                        if sample:
+                            current_samples.append(sample)
+                except psutil.NoSuchProcess:
+                    logger.warning(
+                        f"Main build process PID {self.build_process_pid} disappeared. "
+                        "Falling back to full scan."
+                    )
+                    self.build_process_pid = None
+                except Exception as e:
+                    logger.warning(f"Error scanning descendants: {e}", exc_info=False)
+            else:
+                # Safe path: Scan all system processes
+                processes_scanned = 0
+                for proc in psutil.process_iter(self._iter_attrs):
+                    if self._stop_event.is_set():
+                        break
+                    processes_scanned += 1
+                    sample = self._get_sample_for_process(proc)
+                    if sample:
+                        current_samples.append(sample)
+                
+                logger.debug(f"Scanned {processes_scanned} processes in single sample")
+            
+            logger.debug(f"Single sample collected: {len(current_samples)} matching processes")
+            
+        except Exception as e:
+            logger.error(f"Error in single sample collection: {e}", exc_info=True)
+        
+        return current_samples

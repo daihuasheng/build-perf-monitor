@@ -59,7 +59,15 @@ class RunContext:
 @dataclasses.dataclass
 class CpuAllocationPlan:
     """Dataclass to hold the results of a CPU allocation planning."""
-    build_command_prefix: str
-    build_cores_desc: str
+    build_cores: List[int]
     monitoring_cores: List[int]
+    build_cores_desc: str
     monitoring_cores_desc: str
+    taskset_prefix: str
+    taskset_available: bool
+    
+    # Backward compatibility properties
+    @property
+    def build_command_prefix(self) -> str:
+        """Backward compatibility for old API."""
+        return self.taskset_prefix

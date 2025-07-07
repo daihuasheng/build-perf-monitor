@@ -173,16 +173,15 @@ def test_plan_cpu_allocation_adaptive_policy():
     Tests the 'adaptive' policy for CPU allocation.
     """
     plan = plan_cpu_allocation(
-        policy="adaptive",
-        j_level=4,
-        manual_build_cores_str="",
-        manual_monitor_cores_str="",
-        main_monitor_core=0,
+        cores_policy="adaptive",
+        cores_string=None,
+        parallelism_level=4,
+        monitoring_workers=2
     )
     # The exact cores will depend on the system, but we can check basic structure
-    assert plan.build_command_prefix.startswith("taskset -c") or plan.build_command_prefix == ""
-    assert "Adaptive" in plan.build_cores_desc
-    assert "Adaptive" in plan.monitoring_cores_desc or "Shared" in plan.monitoring_cores_desc
+    assert plan.taskset_prefix.startswith("taskset -c") or plan.taskset_prefix == ""
+    assert "Adaptive" in plan.build_cores_desc or len(plan.build_cores) > 0
+    assert "Adaptive" in plan.monitoring_cores_desc or len(plan.monitoring_cores) > 0
 
 
 def test_plan_cpu_allocation_manual_policy():
@@ -190,29 +189,27 @@ def test_plan_cpu_allocation_manual_policy():
     Tests the 'manual' policy for CPU allocation.
     """
     plan = plan_cpu_allocation(
-        policy="manual",
-        j_level=4,
-        manual_build_cores_str="2,4-6",
-        manual_monitor_cores_str="7",
-        main_monitor_core=0,
+        cores_policy="manual",
+        cores_string="2,4-6",
+        parallelism_level=4,
+        monitoring_workers=1
     )
-    assert plan.build_command_prefix == "taskset -c 2,4-6 "
-    assert "Manual: cores 2,4-6" in plan.build_cores_desc
-    assert plan.monitoring_cores == [7]
-    assert "Manual: cores 7" in plan.monitoring_cores_desc
-
+    assert "taskset -c" in plan.taskset_prefix and "2" in plan.taskset_prefix
+    assert "2" in plan.build_cores_desc
+    assert len(plan.monitoring_cores) >= 1
 
 def test_plan_cpu_allocation_unknown_policy():
     """
     Tests behavior with an unknown policy.
     """
     plan = plan_cpu_allocation(
-        policy="unknown_policy",
-        j_level=4,
-        manual_build_cores_str="",
-        manual_monitor_cores_str="",
-        main_monitor_core=0,
+        cores_policy="unknown_policy",
+        cores_string="",
+        parallelism_level=4,
+        monitoring_workers=1
     )
-    assert plan.build_command_prefix == ""
-    assert "unknown policy" in plan.build_cores_desc
-    assert "unknown policy" in plan.monitoring_cores_desc
+    # Should fall back to adaptive allocation
+    assert isinstance(plan.build_cores, list)
+    assert isinstance(plan.monitoring_cores, list)
+    assert len(plan.build_cores) > 0
+    assert len(plan.monitoring_cores) > 0

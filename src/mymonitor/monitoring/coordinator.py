@@ -1,165 +1,325 @@
 """
-Monitoring coordination and orchestration.
+Asynchronous monitoring coordination and orchestration.
 
-This module provides the main monitoring coordinator that manages the collection
-of memory data from build processes using the configured collector strategy.
+This module provides the AsyncMonitoringCoordinator that manages the collection
+of memory data from build processes using AsyncIO and ThreadPoolExecutor,
+replacing the complex multiprocessing approach.
 """
 
+import asyncio
 import logging
-import multiprocessing
-import queue
-import signal
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict, Any, Set
 
 from ..classification import get_process_category
 from ..models.results import MonitoringResults
 from ..models.runtime import RunContext
-from ..collectors.base import AbstractMemoryCollector
+from ..collectors.base import AbstractMemoryCollector, ProcessMemorySample
 from ..validation import handle_error, ErrorSeverity
 from ..config import get_config
 
 logger = logging.getLogger(__name__)
 
 
-class MonitoringCoordinator:
+class AsyncMonitoringCoordinator:
     """
-    Coordinates memory monitoring during build execution.
+    Asynchronous coordinator for memory monitoring during build execution.
     
-    This class manages the setup and coordination of memory collection workers,
-    data aggregation, and result compilation for build monitoring runs.
+    This class manages monitoring using AsyncIO and ThreadPoolExecutor,
+    providing better resource utilization and simpler error handling
+    than the multiprocessing approach.
     """
     
     def __init__(self, run_context: RunContext):
         """
-        Initialize the monitoring coordinator.
+        Initialize the async monitoring coordinator.
         
         Args:
             run_context: Runtime context for the monitoring run
         """
         self.run_context = run_context
-        self.input_queue: Optional[multiprocessing.Queue] = None
-        self.output_queue: Optional[multiprocessing.Queue] = None
-        self.monitoring_processes: List[multiprocessing.Process] = []
+        self.executor: Optional[ThreadPoolExecutor] = None
+        self.monitoring_tasks: List[asyncio.Task] = []
+        self.collectors: List[AbstractMemoryCollector] = []
         self.results: Optional[MonitoringResults] = None
+        self.is_monitoring = False
+        self.samples_collected: List[Dict[str, Any]] = []
+        self._shutdown_event = asyncio.Event()
         
-    def setup_monitoring(self, monitoring_cores: List[int]) -> None:
+    async def setup_monitoring(self, monitoring_cores: List[int]) -> None:
         """
-        Set up monitoring infrastructure including queues and worker processes.
+        Set up monitoring infrastructure including thread pool and collectors.
         
         Args:
             monitoring_cores: List of CPU core IDs for monitoring workers
         """
         try:
-            # Create multiprocessing queues for communication
-            self.input_queue = multiprocessing.Queue()
-            self.output_queue = multiprocessing.Queue()
+            # Create ThreadPoolExecutor with one thread per monitoring core
+            max_workers = min(len(monitoring_cores), 8)  # Limit to reasonable number
+            self.executor = ThreadPoolExecutor(
+                max_workers=max_workers,
+                thread_name_prefix="AsyncMonitor"
+            )
             
-            # Start monitoring worker processes
-            for i, core_id in enumerate(monitoring_cores):
-                worker_process = multiprocessing.Process(
-                    target=_monitoring_worker_static,
-                    args=(core_id, self.input_queue, self.output_queue, self.run_context),
-                    name=f"MemoryMonitor-{i}-Core{core_id}"
-                )
-                worker_process.start()
-                self.monitoring_processes.append(worker_process)
+            # Create collectors for each monitoring core
+            self.collectors = []
+            for core_id in monitoring_cores:
+                try:
+                    # Create collector synchronously to avoid executor issues
+                    collector = self._create_collector_sync(core_id)
+                    self.collectors.append(collector)
+                except Exception as e:
+                    logger.warning(f"Failed to create collector for core {core_id}: {e}")
+                    
+            if not self.collectors:
+                raise RuntimeError("No collectors could be created")
                 
-            logger.info(f"Started {len(self.monitoring_processes)} monitoring workers on cores {monitoring_cores}")
+            logger.info(f"Set up {len(self.collectors)} async monitoring collectors on cores {monitoring_cores}")
             
         except Exception as e:
             handle_error(
                 error=e,
-                context="setting up monitoring infrastructure",
+                context="setting up async monitoring infrastructure",
                 severity=ErrorSeverity.ERROR,
                 reraise=True,
                 logger=logger
             )
     
-    def start_monitoring(self, build_process_pid: int) -> None:
+    async def start_monitoring(self, build_process_pid: int) -> None:
         """
         Start the monitoring process for the given build PID.
         
         Args:
             build_process_pid: Process ID of the build process to monitor
         """
-        if not self.input_queue:
+        if not self.executor or not self.collectors:
             raise RuntimeError("Monitoring not set up - call setup_monitoring() first")
             
         try:
-            # Send start signal to monitoring workers
-            for _ in self.monitoring_processes:
-                self.input_queue.put({
-                    'action': 'start',
-                    'build_pid': build_process_pid,
-                    'interval': self.run_context.monitoring_interval,
-                    'process_pattern': self.run_context.process_pattern,
-                    'collector_type': self.run_context.collector_type
-                })
+            self.is_monitoring = True
+            self.samples_collected = []
+            self._shutdown_event.clear()
+            
+            # Start monitoring tasks for each collector
+            for i, collector in enumerate(self.collectors):
+                task = asyncio.create_task(
+                    self._monitor_process_async(collector, build_process_pid, i),
+                    name=f"monitor-{i}"
+                )
+                self.monitoring_tasks.append(task)
                 
-            logger.info(f"Started monitoring for build PID {build_process_pid}")
+            logger.info(f"Started async monitoring for build PID {build_process_pid} with {len(self.monitoring_tasks)} tasks")
             
         except Exception as e:
             handle_error(
                 error=e,
-                context=f"starting monitoring for PID {build_process_pid}",
+                context=f"starting async monitoring for PID {build_process_pid}",
                 severity=ErrorSeverity.ERROR,
                 reraise=True,
                 logger=logger
             )
     
-    def stop_monitoring(self) -> None:
+    async def stop_monitoring(self) -> None:
         """
-        Stop all monitoring workers and collect final results.
+        Stop all monitoring tasks and collect final results.
         """
-        if not self.input_queue or not self.output_queue:
-            logger.warning("Monitoring not properly initialized - nothing to stop")
+        if not self.is_monitoring:
+            logger.warning("Monitoring not active - nothing to stop")
             return
             
         try:
-            # Send stop signal to all workers
-            for _ in self.monitoring_processes:
-                self.input_queue.put({'action': 'stop'})
+            # Signal shutdown to all monitoring tasks
+            self._shutdown_event.set()
+            self.is_monitoring = False
             
-            # Collect results from workers
-            all_samples = []
-            # Reduced timeout for faster shutdown, as workers should respond immediately.
-            timeout_seconds = 3.0
-            
-            for i in range(len(self.monitoring_processes)):
+            # Wait for all monitoring tasks to complete
+            if self.monitoring_tasks:
+                await asyncio.gather(*self.monitoring_tasks, return_exceptions=True)
+                
+            # Stop all collectors
+            for collector in self.collectors:
                 try:
-                    worker_results = self.output_queue.get(timeout=timeout_seconds)
-                    if worker_results and 'samples' in worker_results:
-                        all_samples.extend(worker_results['samples'])
-                except queue.Empty:
-                    logger.warning(f"Timeout waiting for results from worker {i}")
+                    collector.stop(timeout=2.0)
+                except Exception as e:
+                    logger.warning(f"Error stopping collector: {e}")
             
-            # Wait for worker processes to finish
-            for process in self.monitoring_processes:
-                process.join(timeout=2.0)
-                if process.is_alive():
-                    logger.warning(f"Force terminating monitoring process {process.name}")
-                    process.terminate()
-            
-            self.monitoring_processes.clear()
-            
+            # Shutdown executor with timeout to prevent hanging
+            if self.executor:
+                try:
+                    # Cancel all pending futures first
+                    self.executor.shutdown(wait=False, cancel_futures=True)
+                    # Give it a brief moment to clean up
+                    await asyncio.sleep(0.1)
+                except Exception as e:
+                    logger.warning(f"Error shutting down executor: {e}")
+                finally:
+                    self.executor = None
+                
             # Aggregate results
-            if all_samples:
-                self.results = self._aggregate_monitoring_data(all_samples)
-                logger.info(f"Monitoring stopped, collected {len(all_samples)} samples")
+            if self.samples_collected:
+                self.results = self._aggregate_monitoring_data(self.samples_collected)
+                logger.info(f"Async monitoring stopped, collected {len(self.samples_collected)} samples")
             else:
                 logger.warning("No monitoring data collected")
                 self.results = None
                 
+            # Clean up
+            self.monitoring_tasks.clear()
+            self.collectors.clear()
+                
         except Exception as e:
             handle_error(
                 error=e,
-                context="stopping monitoring",
+                context="stopping async monitoring",
                 severity=ErrorSeverity.WARNING,
                 reraise=False,
                 logger=logger
             )
+    
+    async def _monitor_process_async(self, collector: AbstractMemoryCollector, build_pid: int, worker_id: int) -> None:
+        """
+        Asynchronous monitoring worker that collects memory samples.
+        
+        Args:
+            collector: Memory collector instance
+            build_pid: Build process PID to monitor
+            worker_id: Unique worker identifier
+        """
+        worker_logger = logging.getLogger(f"{__name__}.worker-{worker_id}")
+        
+        try:
+            # Set build PID and start collector
+            collector.build_process_pid = build_pid
+            
+            # Start collector directly (it's not blocking)
+            collector.start()
+            
+            worker_logger.debug(f"Worker {worker_id}: Started monitoring")
+            
+            # Main monitoring loop
+            while not self._shutdown_event.is_set():
+                try:
+                    # Wait for either shutdown event or interval timeout
+                    await asyncio.wait_for(
+                        self._shutdown_event.wait(),
+                        timeout=self.run_context.monitoring_interval
+                    )
+                    # If we reach here, shutdown was signaled
+                    break
+                except asyncio.TimeoutError:
+                    # Timeout expired, collect sample
+                    await self._collect_sample_async(collector, worker_id, worker_logger)
+                    
+        except Exception as e:
+            worker_logger.error(f"Worker {worker_id}: Fatal error in monitoring loop: {e}", exc_info=True)
+        finally:
+            worker_logger.debug(f"Worker {worker_id}: Exiting")
+    
+    async def _collect_sample_async(self, collector: AbstractMemoryCollector, worker_id: int, worker_logger: logging.Logger) -> None:
+        """
+        Collect a memory sample asynchronously.
+        
+        Args:
+            collector: Memory collector instance
+            worker_id: Worker identifier
+            worker_logger: Logger for this worker
+        """
+        try:
+            # Run sample collection in thread pool - get only ONE sample, not the whole generator
+            loop = asyncio.get_event_loop()
+            sample_batch = await loop.run_in_executor(
+                self.executor,
+                self._get_next_sample_sync,
+                collector
+            )
+            
+            # Process collected samples
+            if sample_batch:
+                epoch = time.time()
+                for sample in sample_batch:
+                    major_cat, minor_cat = get_process_category(
+                        sample.command_name, sample.full_command
+                    )
+                    sample_dict = {
+                        'epoch': epoch,
+                        'pid': sample.pid,
+                        'command_name': sample.command_name,
+                        'full_command': sample.full_command,
+                        'major_category': major_cat,
+                        'minor_category': minor_cat,
+                        'timestamp': time.time(),
+                        'worker_id': worker_id,
+                        **sample.metrics
+                    }
+                    self.samples_collected.append(sample_dict)
+                
+                worker_logger.debug(f"Worker {worker_id}: Collected {len(sample_batch)} samples")
+                
+        except Exception as e:
+            worker_logger.warning(f"Worker {worker_id}: Data collection error: {e}")
+    
+    async def _create_collector_async(self, core_id: int) -> AbstractMemoryCollector:
+        """
+        Create a memory collector instance asynchronously.
+        
+        Args:
+            core_id: CPU core ID for this collector
+            
+        Returns:
+            Memory collector instance
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self.executor,
+            self._create_collector_sync,
+            core_id
+        )
+    
+    def _create_collector_sync(self, core_id: int) -> AbstractMemoryCollector:
+        """
+        Create a memory collector instance (synchronous version).
+        
+        Args:
+            core_id: CPU core ID for this collector
+            
+        Returns:
+            Memory collector instance
+        """
+        # Get app config for collector-specific settings
+        try:
+            app_config = get_config()
+            pss_collector_mode = getattr(app_config.monitor, 'pss_collector_mode', 'full_scan')
+        except Exception:
+            pss_collector_mode = 'full_scan'
+        
+        # Common kwargs for all collectors
+        collector_kwargs = {
+            'collector_cpu_core': core_id,
+            'taskset_available': self.run_context.taskset_available,
+        }
+        
+        collector_type = self.run_context.collector_type
+        
+        if collector_type == "pss_psutil":
+            from ..collectors.pss_psutil import PssPsutilCollector
+            collector_kwargs['mode'] = pss_collector_mode
+            return PssPsutilCollector(
+                self.run_context.process_pattern,
+                self.run_context.monitoring_interval,
+                **collector_kwargs
+            )
+        elif collector_type == "rss_pidstat":
+            from ..collectors.rss_pidstat import RssPidstatCollector
+            collector_kwargs['pidstat_stderr_file'] = self.run_context.paths.collector_aux_log_file
+            return RssPidstatCollector(
+                self.run_context.process_pattern,
+                self.run_context.monitoring_interval,
+                **collector_kwargs
+            )
+        else:
+            raise ValueError(f"Unknown collector type: {collector_type}")
     
     def get_results(self) -> Optional[MonitoringResults]:
         """
@@ -169,8 +329,8 @@ class MonitoringCoordinator:
             MonitoringResults instance or None if no data was collected
         """
         return self.results
-
-    def _aggregate_monitoring_data(self, all_samples: List[dict]) -> MonitoringResults:
+    
+    def _aggregate_monitoring_data(self, all_samples: List[Dict[str, Any]]) -> MonitoringResults:
         """
         Aggregate raw monitoring samples into structured results.
         
@@ -244,23 +404,32 @@ class MonitoringCoordinator:
                     category_pid_set[category] = set()
                 category_pid_set[category].add(sample['pid'])
             
-            # Update peak values for each category (total for that category across all processes)
+            # Update peak values for each category
             for category, memory in category_memory.items():
                 if category not in category_peak_sum or memory > category_peak_sum[category]:
                     category_peak_sum[category] = memory
         
-        # Create category stats with both total peak and individual process peak
+        # Calculate category statistics using individual process peaks
         category_stats = {}
-        for category in category_peak_sum:
-            # Find the peak memory of individual processes in this category
-            category_processes = [pid for pid, cat in process_category_map.items() if cat == category]
-            individual_peak_memory = max([process_peak_memory[pid] for pid in category_processes]) if category_processes else 0
+        for pid, peak_memory in process_peak_memory.items():
+            category = process_category_map[pid]
+            if category not in category_stats:
+                category_stats[category] = {
+                    'peak_sum_kb': 0,
+                    'process_count': 0,
+                    'average_peak_kb': 0
+                }
             
-            category_stats[category] = {
-                'peak_memory_kb': category_peak_sum[category],  # Total peak for category
-                'individual_peak_memory_kb': individual_peak_memory,  # Peak of single process in category
-                'pid_count': len(category_pid_set[category])
-            }
+            category_stats[category]['peak_sum_kb'] += peak_memory
+            category_stats[category]['process_count'] += 1
+        
+        # Calculate averages
+        for category, stats in category_stats.items():
+            if stats['process_count'] > 0:
+                stats['average_peak_kb'] = stats['peak_sum_kb'] / stats['process_count']
+        
+        # Convert sets to lists for JSON serialization
+        category_pid_set_lists = {k: list(v) for k, v in category_pid_set.items()}
         
         return MonitoringResults(
             all_samples_data=all_samples,
@@ -268,179 +437,38 @@ class MonitoringCoordinator:
             peak_overall_memory_kb=peak_overall_memory_kb,
             peak_overall_memory_epoch=peak_overall_memory_epoch,
             category_peak_sum=category_peak_sum,
-            category_pid_set=category_pid_set
+            category_pid_set=category_pid_set_lists
         )
+    
+    async def __aenter__(self):
+        """Async context manager entry."""
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit."""
+        await self.stop_monitoring()
 
-
-def _monitoring_worker_static(core_id: int, input_queue: multiprocessing.Queue, 
-                             output_queue: multiprocessing.Queue, run_context: RunContext) -> None:
-    """
-    Static worker process function for memory monitoring.
-    
-    This function is separated from the class to avoid pickle issues with 
-    multiprocessing and weakref objects in the class instance.
-    
-    Args:
-        core_id: CPU core ID this worker is assigned to
-        input_queue: Queue for receiving control messages
-        output_queue: Queue for sending collected data
-        run_context: Runtime context for the monitoring run
-    """
-    # Make this worker process immune to SIGINT (Ctrl+C).
-    # The parent process is responsible for signaling a shutdown via the queue.
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
-    
-    # Create a new logger for this worker process
-    worker_logger = logging.getLogger(f"mymonitor.monitoring.worker.{core_id}")
-    
-    try:
-        # Set CPU affinity if taskset is available
-        if run_context.taskset_available:
-            import os
-            import subprocess
-            pid = os.getpid()
-            try:
-                subprocess.run(['taskset', '-cp', str(core_id), str(pid)], 
-                             check=False, capture_output=True)
-            except (FileNotFoundError, subprocess.SubprocessError):
-                pass  # Taskset not available or failed, continue without affinity
+    def _get_next_sample_sync(self, collector: AbstractMemoryCollector) -> Optional[List[ProcessMemorySample]]:
+        """
+        Get the next sample from the collector synchronously.
         
-        collector = None
-        samples = []
-        
-        # Wait indefinitely for the initial 'start' message.
-        # This is a blocking call.
-        start_message = input_queue.get()
-        if start_message.get('action') != 'start':
-            worker_logger.warning(f"Worker {core_id}: Received non-start message. Exiting.")
-            return
-
-        # Initialize and start collector based on the message
-        try:
-            collector = _create_collector_static(
-                start_message['collector_type'], 
-                start_message['process_pattern'],
-                run_context
-            )
-            if 'build_pid' in start_message:
-                collector.build_process_pid = start_message['build_pid']
-            collector.start()
-            worker_logger.debug(f"Worker {core_id}: Started monitoring with collector {start_message['collector_type']}")
-        except Exception as e:
-            worker_logger.error(f"Worker {core_id}: Failed to start collector: {e}")
-            return # Exit if collector fails to start
-
-        # Main monitoring loop
-        while True:
-            try:
-                # Wait for a 'stop' message with a timeout equal to the monitoring interval.
-                # This replaces the old time.sleep() and makes the loop interruptible.
-                message = input_queue.get(block=True, timeout=run_context.monitoring_interval)
-                
-                if message.get('action') == 'stop':
-                    worker_logger.debug(f"Worker {core_id}: Stop message received.")
-                    break  # Exit loop to terminate.
-                else:
-                    worker_logger.warning(f"Worker {core_id}: Ignoring unexpected message: {message}")
-
-            except queue.Empty:
-                # This is the normal path for an active monitoring loop.
-                # The timeout expired, so it's time to collect a sample.
-                pass
+        Args:
+            collector: Memory collector instance
             
-            # Collect data
-            try:
-                sample_collected = False
-                for sample_batch in collector.read_samples():
-                    if sample_batch:
-                        epoch = time.time()
-                        for sample in sample_batch:
-                            major_cat, minor_cat = get_process_category(
-                                sample.command_name, sample.full_command
-                            )
-                            sample_dict = {
-                                'epoch': epoch,
-                                'pid': sample.pid,
-                                'command_name': sample.command_name,
-                                'full_command': sample.full_command,
-                                'major_category': major_cat,
-                                'minor_category': minor_cat,
-                                'timestamp': time.time(),
-                                **sample.metrics
-                            }
-                            samples.append(sample_dict)
-                        sample_collected = True
-                        worker_logger.debug(f"Worker {core_id}: Collected {len(sample_batch)} samples")
-                    break  # Only process one batch per interval
+        Returns:
+            List of ProcessMemorySample or None if no samples available
+        """
+        try:
+            # For psutil-based collectors, use direct sampling instead of the infinite generator
+            if hasattr(collector, '_collect_single_sample'):
+                return collector._collect_single_sample()
+            else:
+                # Fallback: get one sample from the generator with limited iteration
+                sample_iter = collector.read_samples()
+                return next(sample_iter)
                 
-                if not sample_collected and len(samples) % 10 == 0:
-                     worker_logger.debug(f"Worker {core_id}: No samples collected in this iteration")
-
-            except Exception as e:
-                worker_logger.warning(f"Worker {core_id}: Data collection error: {e}")
-
-        # After the loop has been broken, send results back.
-        output_queue.put({'samples': samples})
-        worker_logger.debug(f"Worker {core_id}: Stopped monitoring, sent {len(samples)} samples")
-
-    except Exception as e:
-        worker_logger.error(f"Worker {core_id}: Fatal error in worker loop: {e}", exc_info=True)
-    finally:
-        # Ensure collector is properly stopped, even if errors occurred.
-        if collector:
-            try:
-                collector.stop(timeout=2.0)
-            except Exception as e:
-                worker_logger.warning(f"Worker {core_id}: Error in final collector cleanup: {e}")
-        worker_logger.debug(f"Worker {core_id}: Exiting")
-
-
-def _create_collector_static(collector_type: str, process_pattern: str, run_context: RunContext) -> AbstractMemoryCollector:
-    """
-    Create a memory collector instance based on the specified type.
-    
-    This is a static function to avoid pickle issues with class instances.
-    
-    Args:
-        collector_type: Type of collector to create
-        process_pattern: Pattern for finding relevant processes
-        run_context: Runtime context for collector configuration
-        
-    Returns:
-        Memory collector instance
-    """
-    # Get app config for collector-specific settings
-    try:
-        app_config = get_config()
-        # Extract collector mode for psutil collectors
-        pss_collector_mode = getattr(app_config.monitor, 'pss_collector_mode', 'full_scan')
-    except Exception:
-        # Fallback to defaults if config is not available
-        pss_collector_mode = 'full_scan'
-    
-    # Common kwargs for all collectors
-    collector_kwargs = {
-        'collector_cpu_core': run_context.monitor_core_id,
-        'taskset_available': run_context.taskset_available,
-    }
-    
-    if collector_type == "pss_psutil":
-        from ..collectors.pss_psutil import PssPsutilCollector
-        collector_kwargs['mode'] = pss_collector_mode
-        return PssPsutilCollector(
-            process_pattern, 
-            run_context.monitoring_interval,
-            **collector_kwargs
-        )
-    elif collector_type == "rss_pidstat":
-        from ..collectors.rss_pidstat import RssPidstatCollector
-        # Add pidstat-specific parameters
-        collector_kwargs['pidstat_stderr_file'] = run_context.paths.collector_aux_log_file
-        return RssPidstatCollector(
-            process_pattern, 
-            run_context.monitoring_interval,
-            **collector_kwargs
-        )
-    else:
-        raise ValueError(f"Unknown collector type: {collector_type}")
- 
+        except StopIteration:
+            return None
+        except Exception as e:
+            logger.warning(f"Error getting sample from collector: {e}")
+            return None

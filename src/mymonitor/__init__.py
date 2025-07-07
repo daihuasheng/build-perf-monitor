@@ -10,10 +10,10 @@ The package is organized into specialized modules:
 - validation: Input validation and error handling
 - system: System interaction and process management
 - classification: Process categorization and rules
+- collectors: Memory data collection implementations
 - monitoring: Memory monitoring coordination
-- execution: Build process execution
-- runner: Main monitoring orchestration
-- cli: Command-line interface
+- executor: Build process execution
+- cli: Command-line interface and orchestration
 
 Usage:
     From command line:
@@ -28,7 +28,7 @@ Usage:
 
 # Main interfaces
 from .config import get_config, clear_config_cache, set_config_path
-from .runner import BuildRunner
+from .cli.orchestrator import BuildRunner
 from .cli import main_cli
 
 # Model classes for external use
