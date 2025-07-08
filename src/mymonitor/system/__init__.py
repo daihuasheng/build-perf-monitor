@@ -14,7 +14,7 @@ from .commands import (
 )
 
 # CPU allocation and scheduling
-from .cpu_manager import plan_cpu_allocation, get_cpu_manager
+from .cpu_manager import plan_cpu_allocation, get_cpu_manager, parse_cpu_cores
 
 # Process parsing and analysis
 from .processes import parse_shell_wrapper_command
@@ -28,6 +28,7 @@ __all__ = [
     # CPU allocation
     "plan_cpu_allocation",
     "get_cpu_manager",
+    "parse_cpu_cores",
     # Process parsing
     "parse_shell_wrapper_command",
 ]

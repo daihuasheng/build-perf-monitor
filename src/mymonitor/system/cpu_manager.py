@@ -342,6 +342,23 @@ class CPUManager:
         except Exception as e:
             logger.warning(f"Failed to set Windows thread affinity: {e}")
             return False
+    
+    def parse_core_range_string(self, core_str: str) -> List[int]:
+        """
+        Public interface for parsing CPU core range strings.
+        
+        Args:
+            core_str: String like "1,2,4-7" or "0-3"
+            
+        Returns:
+            List of CPU core IDs
+            
+        Example:
+            >>> manager = get_cpu_manager()
+            >>> manager.parse_core_range_string("1,2,4-7")
+            [1, 2, 4, 5, 6, 7]
+        """
+        return self._parse_core_range_str(core_str)
 
 
 # Global CPU manager instance
@@ -377,3 +394,26 @@ def plan_cpu_allocation(
     return get_cpu_manager().plan_cpu_allocation(
         cores_policy, cores_string, parallelism_level, monitoring_workers
     )
+
+
+def parse_cpu_cores(core_str: str) -> List[int]:
+    """
+    Parse CPU core range string into list of integers.
+    
+    This is a convenience function that uses the global CPU manager instance.
+    
+    Args:
+        core_str: String like "1,2,4-7" or "0-3"
+        
+    Returns:
+        List of CPU core IDs
+        
+    Example:
+        >>> parse_cpu_cores("1,2,4-7")
+        [1, 2, 4, 5, 6, 7]
+        >>> parse_cpu_cores("0-3")
+        [0, 1, 2, 3]
+        >>> parse_cpu_cores("")
+        []
+    """
+    return get_cpu_manager().parse_core_range_string(core_str)

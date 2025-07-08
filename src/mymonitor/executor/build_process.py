@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 
 from ..system.cpu_manager import get_cpu_manager
+from ..system import parse_cpu_cores
 from ..validation import handle_error, ErrorSeverity
 
 logger = logging.getLogger(__name__)
@@ -453,7 +454,7 @@ class BuildProcessManagerFactory:
         elif cpu_scheduling_policy == "manual":
             manual_cores = kwargs.get('manual_build_cores', '')
             if manual_cores:
-                build_cores = BuildProcessManagerFactory._parse_core_list(manual_cores)
+                build_cores = parse_cpu_cores(manual_cores)
         
         return BuildProcessManager(
             build_command=build_command,
@@ -489,29 +490,6 @@ class BuildProcessManagerFactory:
         build_cores = available_cores[monitor_cores:monitor_cores + build_cores_count]
         
         return build_cores
-    
-    @staticmethod
-    def _parse_core_list(core_string: str) -> List[int]:
-        """
-        Parse a core list string into a list of integers.
-        
-        Args:
-            core_string: String like "1,2,4-7"
-            
-        Returns:
-            List of CPU core IDs
-        """
-        cores = []
-        
-        for part in core_string.split(','):
-            part = part.strip()
-            if '-' in part:
-                start, end = map(int, part.split('-'))
-                cores.extend(range(start, end + 1))
-            else:
-                cores.append(int(part))
-        
-        return cores
 
 
 # Convenience function for simple usage
