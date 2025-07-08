@@ -40,6 +40,7 @@ def validate_monitor_config(monitor_data: Dict[str, Any]) -> MonitorConfig:
     general_settings = monitor_data.get("general", {})
     collection_settings = monitor_data.get("collection", {})
     scheduling_settings = monitor_data.get("scheduling", {})
+    async_settings = monitor_data.get("async_settings", {})
     
     try:
         # Validate collection settings
@@ -48,6 +49,27 @@ def validate_monitor_config(monitor_data: Dict[str, Any]) -> MonitorConfig:
             min_value=0.001,  # 1ms minimum
             max_value=60.0,   # 60s maximum
             field_name="monitor.collection.interval_seconds"
+        )
+        
+        process_check_interval = validate_positive_float(
+            collection_settings.get("process_check_interval", 0.1),
+            min_value=0.001,  # 1ms minimum
+            max_value=10.0,   # 10s maximum
+            field_name="monitor.collection.process_check_interval"
+        )
+        
+        monitoring_timeout = validate_positive_float(
+            collection_settings.get("monitoring_timeout", 30.0),
+            min_value=1.0,    # 1s minimum
+            max_value=300.0,  # 5m maximum
+            field_name="monitor.collection.monitoring_timeout"
+        )
+        
+        graceful_shutdown_timeout = validate_positive_float(
+            collection_settings.get("graceful_shutdown_timeout", 5.0),
+            min_value=0.1,    # 100ms minimum
+            max_value=60.0,   # 1m maximum
+            field_name="monitor.collection.graceful_shutdown_timeout"
         )
         
         metric_type = validate_enum_choice(
@@ -75,6 +97,26 @@ def validate_monitor_config(monitor_data: Dict[str, Any]) -> MonitorConfig:
             valid_choices=["adaptive", "manual"],
             field_name="monitor.scheduling.scheduling_policy"
         )
+        
+        enable_cpu_affinity = scheduling_settings.get("enable_cpu_affinity", True)
+        if not isinstance(enable_cpu_affinity, bool):
+            raise ValidationError("monitor.scheduling.enable_cpu_affinity must be a boolean")
+        
+        max_concurrent_monitors = validate_positive_integer(
+            scheduling_settings.get("max_concurrent_monitors", 8),
+            min_value=1,
+            max_value=128,
+            field_name="monitor.scheduling.max_concurrent_monitors"
+        )
+        
+        thread_name_prefix = scheduling_settings.get("thread_name_prefix", "AsyncMonitor")
+        if not isinstance(thread_name_prefix, str) or not thread_name_prefix.strip():
+            raise ValidationError("monitor.scheduling.thread_name_prefix must be a non-empty string")
+        
+        # Validate async settings
+        enable_thread_pool_optimization = async_settings.get("enable_thread_pool_optimization", True)
+        if not isinstance(enable_thread_pool_optimization, bool):
+            raise ValidationError("monitor.async_settings.enable_thread_pool_optimization must be a boolean")
         
         # Validate general settings
         default_jobs = general_settings.get("default_jobs", [4, 8, 16])
@@ -111,16 +153,24 @@ def validate_monitor_config(monitor_data: Dict[str, Any]) -> MonitorConfig:
             interval_seconds=interval_seconds,
             metric_type=metric_type,
             pss_collector_mode=pss_collector_mode,
+            process_check_interval=process_check_interval,
+            monitoring_timeout=monitoring_timeout,
+            graceful_shutdown_timeout=graceful_shutdown_timeout,
             # from [monitor.scheduling]
             scheduling_policy=scheduling_policy,
             monitor_core=monitor_core,
             manual_build_cores=scheduling_settings.get("manual_build_cores", ""),
             manual_monitoring_cores=scheduling_settings.get("manual_monitoring_cores", ""),
+            enable_cpu_affinity=enable_cpu_affinity,
+            max_concurrent_monitors=max_concurrent_monitors,
+            thread_name_prefix=thread_name_prefix,
             # from [monitor.general]
             default_jobs=validated_default_jobs,
             skip_plots=general_settings.get("skip_plots", False),
             log_root_dir=log_root_dir,
             categorization_cache_size=categorization_cache_size,
+            # from [monitor.async_settings]
+            enable_thread_pool_optimization=enable_thread_pool_optimization,
         )
         
     except ValidationError as e:

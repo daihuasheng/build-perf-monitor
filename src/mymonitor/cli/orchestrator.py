@@ -15,20 +15,24 @@ from ..config import get_config
 from ..models.config import ProjectConfig
 from ..models.runtime import RunContext, RunPaths
 from ..monitoring.coordinator import AsyncMonitoringCoordinator
-from ..executor.build_process import AsyncBuildRunner
+from ..executor.build_process import BuildProcessManager
 from ..system.cpu_manager import plan_cpu_allocation
-from ..executor.thread_pool import initialize_global_thread_pools, shutdown_global_thread_pools
+from ..executor.thread_pool import (
+    initialize_global_thread_pools, 
+    shutdown_global_thread_pools, 
+    ThreadPoolConfig
+)
 from ..validation import handle_error, ErrorSeverity
 
 logger = logging.getLogger(__name__)
 
 
-class AsyncBuildMonitor:
+class BuildRunner:
     """
-    Main async build monitor that coordinates monitoring and build execution.
+    Main async build runner that coordinates monitoring and build execution.
     
-    This class replaces the old multiprocessing-based BuildRunner with
-    a modern AsyncIO implementation.
+    This class provides async build monitoring with resource management,
+    CPU affinity, and comprehensive monitoring capabilities.
     """
     
     def __init__(
@@ -61,7 +65,7 @@ class AsyncBuildMonitor:
         # Runtime state
         self.run_context: Optional[RunContext] = None
         self.monitoring_coordinator: Optional[AsyncMonitoringCoordinator] = None
-        self.build_runner: Optional[AsyncBuildRunner] = None
+        self.build_runner: Optional[BuildProcessManager] = None
         self.shutdown_requested = False
         
     async def run_async(self) -> bool:
@@ -72,14 +76,38 @@ class AsyncBuildMonitor:
             True if successful, False otherwise
         """
         try:
-            # Initialize global thread pools
-            initialize_global_thread_pools()
+            # Get configuration for thread pools
+            config = get_config()
+            
+            # Create thread pool configurations based on main config
+            thread_pool_configs = {
+                'monitoring': ThreadPoolConfig(
+                    max_workers=config.monitor.max_concurrent_monitors,
+                    thread_name_prefix=config.monitor.thread_name_prefix,
+                    enable_cpu_affinity=config.monitor.enable_cpu_affinity,
+                    shutdown_timeout=config.monitor.graceful_shutdown_timeout
+                ),
+                'build': ThreadPoolConfig(
+                    max_workers=2,
+                    thread_name_prefix="Build",
+                    enable_cpu_affinity=config.monitor.enable_cpu_affinity,
+                    shutdown_timeout=config.monitor.graceful_shutdown_timeout
+                ),
+                'io': ThreadPoolConfig(
+                    max_workers=2,
+                    thread_name_prefix="IO",
+                    enable_cpu_affinity=False,
+                    shutdown_timeout=config.monitor.graceful_shutdown_timeout
+                )
+            }
+            
+            # Initialize global thread pools with configuration
+            initialize_global_thread_pools(thread_pool_configs)
             
             # Setup run context
             await self._setup_run_context()
             
             # Plan CPU allocation
-            config = get_config()
             cpu_plan = plan_cpu_allocation(
                 cores_policy=config.monitor.scheduling_policy,
                 cores_string=config.monitor.manual_build_cores,
@@ -98,7 +126,7 @@ class AsyncBuildMonitor:
             
             # Create build runner
             actual_build_command = self.project_config.build_command_template.replace('<N>', str(self.parallelism_level))
-            self.build_runner = AsyncBuildRunner(
+            self.build_runner = BuildProcessManager(
                 build_command=actual_build_command,
                 build_directory=Path(self.project_config.dir),
                 build_cores=cpu_plan.build_cores,
@@ -313,49 +341,38 @@ class AsyncBuildMonitor:
             
         except Exception as e:
             logger.warning(f"Error during cleanup: {e}")
-
-
-# For backward compatibility, create a synchronous wrapper
-class BuildRunner:
-    """
-    Synchronous wrapper for AsyncBuildMonitor to maintain CLI compatibility.
-    """
-    
-    def __init__(self, **kwargs):
-        """Initialize with same parameters as AsyncBuildMonitor."""
-        self.async_monitor = AsyncBuildMonitor(**kwargs)
-        self.loop: Optional[asyncio.AbstractEventLoop] = None
     
     def run(self) -> bool:
-        """Run the build monitoring process synchronously."""
+        """
+        Run the build monitoring process synchronously.
+        
+        Returns:
+            True if successful, False otherwise
+        """
         try:
             # Check if we're already in an async context
             try:
                 # This will raise RuntimeError if no event loop is running
                 loop = asyncio.get_running_loop()
                 # If we get here, we're in an async context, we can't use run_until_complete
-                logger.error("Cannot run synchronous BuildRunner from within async context. Use AsyncBuildMonitor directly.")
+                logger.error("Cannot run synchronous BuildRunner from within async context. Use run_async() directly.")
                 return False
             except RuntimeError:
                 # No event loop running, we can create one
                 pass
             
             # Create and run new event loop
-            self.loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self.loop)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
             
             try:
                 # Run the async monitor
-                return self.loop.run_until_complete(self.async_monitor.run_async())
+                return loop.run_until_complete(self.run_async())
             finally:
                 # Clean up the event loop
-                self.loop.close()
+                loop.close()
                 asyncio.set_event_loop(None)
             
         except Exception as e:
             logger.error(f"Error running build monitor: {e}", exc_info=True)
             return False
-    
-    def request_shutdown(self) -> None:
-        """Request shutdown of the build monitoring process."""
-        self.async_monitor.request_shutdown()

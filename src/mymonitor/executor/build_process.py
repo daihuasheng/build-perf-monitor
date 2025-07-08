@@ -1,7 +1,7 @@
 """
 Asynchronous build runner for executing builds with monitoring support.
 
-This module provides an AsyncBuildRunner that can execute build processes
+This module provides a BuildProcessManager that can execute build processes
 while coordinating with async monitoring, supporting CPU affinity and
 proper resource management.
 """
@@ -22,9 +22,9 @@ from ..validation import handle_error, ErrorSeverity
 logger = logging.getLogger(__name__)
 
 
-class AsyncBuildRunner:
+class BuildProcessManager:
     """
-    Asynchronous build runner that coordinates build execution with monitoring.
+    Asynchronous build process manager that coordinates build execution with monitoring.
     
     This class manages the execution of build processes with proper CPU affinity,
     timeout handling, and integration with async monitoring systems.
@@ -415,9 +415,9 @@ class AsyncBuildRunner:
             await self.cancel_build_async()
 
 
-class AsyncBuildRunnerFactory:
+class BuildProcessManagerFactory:
     """
-    Factory for creating async build runners with various configurations.
+    Factory for creating build process managers with various configurations.
     """
     
     @staticmethod
@@ -429,7 +429,7 @@ class AsyncBuildRunnerFactory:
         cpu_scheduling_policy: str = "adaptive",
         executor: Optional[ThreadPoolExecutor] = None,
         **kwargs
-    ) -> AsyncBuildRunner:
+    ) -> BuildProcessManager:
         """
         Create an async build runner with appropriate CPU allocation.
         
@@ -443,19 +443,19 @@ class AsyncBuildRunnerFactory:
             **kwargs: Additional arguments for build runner
             
         Returns:
-            Configured AsyncBuildRunner instance
+            Configured BuildProcessManager instance
         """
         # Determine CPU cores for build process
         build_cores = None
         
         if cpu_scheduling_policy == "adaptive":
-            build_cores = AsyncBuildRunnerFactory._get_adaptive_build_cores(parallelism_level)
+            build_cores = BuildProcessManagerFactory._get_adaptive_build_cores(parallelism_level)
         elif cpu_scheduling_policy == "manual":
             manual_cores = kwargs.get('manual_build_cores', '')
             if manual_cores:
-                build_cores = AsyncBuildRunnerFactory._parse_core_list(manual_cores)
+                build_cores = BuildProcessManagerFactory._parse_core_list(manual_cores)
         
-        return AsyncBuildRunner(
+        return BuildProcessManager(
             build_command=build_command,
             build_directory=build_directory,
             build_cores=build_cores,
@@ -535,7 +535,7 @@ async def run_build_async(
     Returns:
         Tuple of (return_code, stdout, stderr)
     """
-    runner = AsyncBuildRunnerFactory.create_runner(
+    runner = BuildProcessManagerFactory.create_runner(
         build_command=build_command,
         build_directory=build_directory,
         parallelism_level=parallelism_level,

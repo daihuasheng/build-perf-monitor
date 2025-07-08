@@ -26,12 +26,21 @@ class MonitorConfig:
     interval_seconds: float
     metric_type: str
     pss_collector_mode: str
+    process_check_interval: float
+    monitoring_timeout: float
+    graceful_shutdown_timeout: float
 
     # [monitor.scheduling] - Unified Policy
     scheduling_policy: str
     monitor_core: int
     manual_build_cores: str
     manual_monitoring_cores: str
+    enable_cpu_affinity: bool
+    max_concurrent_monitors: int
+    thread_name_prefix: str
+    
+    # [monitor.async_settings] - AsyncIO-specific Configuration
+    enable_thread_pool_optimization: bool = True
 
 
 @dataclass

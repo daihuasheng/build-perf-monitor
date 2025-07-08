@@ -48,6 +48,12 @@ class AsyncMonitoringCoordinator:
         self.samples_collected: List[Dict[str, Any]] = []
         self._shutdown_event = asyncio.Event()
         
+        # Get configuration for async settings
+        config = get_config()
+        self.monitoring_timeout = config.monitor.monitoring_timeout
+        self.graceful_shutdown_timeout = config.monitor.graceful_shutdown_timeout
+        self.max_concurrent_monitors = config.monitor.max_concurrent_monitors
+        
     async def setup_monitoring(self, monitoring_cores: List[int]) -> None:
         """
         Set up monitoring infrastructure including thread pool and collectors.
@@ -56,8 +62,8 @@ class AsyncMonitoringCoordinator:
             monitoring_cores: List of CPU core IDs for monitoring workers
         """
         try:
-            # Create ThreadPoolExecutor with one thread per monitoring core
-            max_workers = min(len(monitoring_cores), 8)  # Limit to reasonable number
+            # Create ThreadPoolExecutor with configured max workers
+            max_workers = min(len(monitoring_cores), self.max_concurrent_monitors)
             self.executor = ThreadPoolExecutor(
                 max_workers=max_workers,
                 thread_name_prefix="AsyncMonitor"
@@ -102,15 +108,15 @@ class AsyncMonitoringCoordinator:
             self.samples_collected = []
             self._shutdown_event.clear()
             
-            # Start monitoring tasks for each collector
+            # Start monitoring tasks for each collector with timeout support
             for i, collector in enumerate(self.collectors):
                 task = asyncio.create_task(
-                    self._monitor_process_async(collector, build_process_pid, i),
+                    self._monitor_process_with_timeout(collector, build_process_pid, i),
                     name=f"monitor-{i}"
                 )
                 self.monitoring_tasks.append(task)
                 
-            logger.info(f"Started async monitoring for build PID {build_process_pid} with {len(self.monitoring_tasks)} tasks")
+            logger.info(f"Started async monitoring for build PID {build_process_pid} with {len(self.monitoring_tasks)} tasks (timeout: {self.monitoring_timeout}s)")
             
         except Exception as e:
             handle_error(
@@ -120,6 +126,26 @@ class AsyncMonitoringCoordinator:
                 reraise=True,
                 logger=logger
             )
+    
+    async def _monitor_process_with_timeout(self, collector: AbstractMemoryCollector, build_process_pid: int, worker_id: int) -> None:
+        """
+        Monitor a process with timeout support.
+        
+        Args:
+            collector: Memory collector instance
+            build_process_pid: Process ID of the build process 
+            worker_id: Worker identifier
+        """
+        try:
+            # Run monitoring with timeout
+            await asyncio.wait_for(
+                self._monitor_process_async(collector, build_process_pid, worker_id),
+                timeout=self.monitoring_timeout
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"Monitoring worker {worker_id} timed out after {self.monitoring_timeout}s")
+        except Exception as e:
+            logger.error(f"Monitoring worker {worker_id} failed: {e}")
     
     async def stop_monitoring(self) -> None:
         """
@@ -141,7 +167,7 @@ class AsyncMonitoringCoordinator:
             # Stop all collectors
             for collector in self.collectors:
                 try:
-                    collector.stop(timeout=2.0)
+                    collector.stop(timeout=self.graceful_shutdown_timeout)
                 except Exception as e:
                     logger.warning(f"Error stopping collector: {e}")
             

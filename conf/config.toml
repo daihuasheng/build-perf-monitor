@@ -28,6 +28,12 @@ metric_type = "pss_psutil"
 #   system spawns them in a detached way. Use the `verify_process_tree.py`
 #   tool to check if this mode is safe for your project.
 pss_collector_mode = "full_scan"
+# Interval for process checking operations (seconds)
+process_check_interval = 0.1
+# Timeout for monitoring operations (seconds)
+monitoring_timeout = 30.0
+# Timeout for graceful shutdown (seconds)
+graceful_shutdown_timeout = 5.0
 
 [monitor.scheduling]
 # Defines the overall CPU scheduling strategy.
@@ -51,28 +57,25 @@ manual_build_cores = ""
 # A string defining specific cores for monitoring workers (e.g., '8-15').
 manual_monitoring_cores = ""
 
+# Enable CPU affinity for monitoring threads (used by ThreadPoolManager)
+enable_cpu_affinity = true
+
+# Maximum number of concurrent monitors/workers
+max_concurrent_monitors = 8
+
+# Thread/worker name prefix for identification in logs and debugging
+thread_name_prefix = "AsyncMonitor"
+
 # ===================================================================
-# AsyncIO Monitoring Configuration
+# AsyncIO-specific Configuration
+# Only configurations that are truly specific to async implementation
 # ===================================================================
 [monitor.async_settings]
-# Maximum number of concurrent monitoring threads
-max_monitoring_threads = 4
-# Enable CPU affinity for monitoring threads
-enable_cpu_affinity = true
-# Timeout for monitoring operations (seconds)
-monitoring_timeout = 30.0
-# Timeout for graceful shutdown (seconds)
-graceful_shutdown_timeout = 5.0
-# Interval for process checking (seconds)
-process_check_interval = 0.1
-# Interval for memory collection (seconds)
-memory_collection_interval = 1.0
-# Maximum number of concurrent async monitors
-max_concurrent_monitors = 8
-# Enable thread pool optimization
+# Enable thread pool optimization features (async-specific)
+# This enables advanced thread pool optimizations that are only available
+# in async monitoring mode, such as adaptive worker scaling and CPU-aware
+# task distribution.
 enable_thread_pool_optimization = true
-# Thread pool worker thread prefix
-thread_name_prefix = "AsyncMonitor"
 
 
 # ===================================================================
