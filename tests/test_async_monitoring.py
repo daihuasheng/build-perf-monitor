@@ -100,15 +100,18 @@ class TestAsyncMonitoringCoordinator:
         # Start monitoring
         build_pid = 12345
         
-        with patch('asyncio.create_task') as mock_create_task:
-            mock_task = Mock()
-            mock_create_task.return_value = mock_task
-            
+        # Mock the monitoring method to return an asyncio.Task
+        async def mock_monitor_process():
+            await asyncio.sleep(0)  # Simulate some async work
+        
+        with patch.object(coordinator, '_monitor_process_with_timeout', side_effect=mock_monitor_process):
             await coordinator.start_monitoring(build_pid)
             
             assert coordinator.is_monitoring
             assert len(coordinator.monitoring_tasks) == 1
-            assert coordinator.monitoring_tasks[0] == mock_task
+            
+            # Ensure tasks are properly awaited
+            await asyncio.gather(*coordinator.monitoring_tasks, return_exceptions=True)
             
         # Clean up
         coordinator.executor.shutdown(wait=True)
