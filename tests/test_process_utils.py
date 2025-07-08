@@ -3,7 +3,7 @@ from pathlib import Path
 
 from mymonitor.models import AppConfig, RuleConfig, MonitorConfig
 from mymonitor.classification import get_process_category
-from mymonitor.system import plan_cpu_allocation
+from mymonitor.system import get_cpu_manager
 
 # --- Fixture for Mocking Configuration ---
 
@@ -178,7 +178,7 @@ def test_plan_cpu_allocation_adaptive_policy():
     """
     Tests the 'adaptive' policy for CPU allocation.
     """
-    plan = plan_cpu_allocation(
+    plan = get_cpu_manager().plan_cpu_allocation(
         cores_policy="adaptive",
         cores_string=None,
         parallelism_level=4,
@@ -194,7 +194,7 @@ def test_plan_cpu_allocation_manual_policy():
     """
     Tests the 'manual' policy for CPU allocation.
     """
-    plan = plan_cpu_allocation(
+    plan = get_cpu_manager().plan_cpu_allocation(
         cores_policy="manual",
         cores_string="2,4-6",
         parallelism_level=4,
@@ -208,7 +208,7 @@ def test_plan_cpu_allocation_unknown_policy():
     """
     Tests behavior with an unknown policy.
     """
-    plan = plan_cpu_allocation(
+    plan = get_cpu_manager().plan_cpu_allocation(
         cores_policy="unknown_policy",
         cores_string="",
         parallelism_level=4,
