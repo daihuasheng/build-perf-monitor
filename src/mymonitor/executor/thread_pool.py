@@ -355,6 +355,32 @@ class ThreadPoolManager:
         """
         return self.pools.get(pool_name)
     
+    def create_monitoring_executor(self, max_workers: Optional[int] = None) -> ManagedThreadPoolExecutor:
+        """
+        Create a dedicated monitoring executor with dynamic configuration.
+        
+        This method creates a temporary monitoring executor that can be used
+        for specific monitoring tasks with custom worker count. The executor
+        should be managed by the caller (started and shutdown appropriately).
+        
+        Args:
+            max_workers: Maximum number of workers (defaults to 4)
+            
+        Returns:
+            Configured ManagedThreadPoolExecutor for monitoring
+        """
+        if max_workers is None:
+            max_workers = 4
+            
+        config = ThreadPoolConfig(
+            max_workers=max_workers,
+            thread_name_prefix="AsyncMonitor",
+            enable_cpu_affinity=True,
+            shutdown_timeout=10.0
+        )
+        
+        return ManagedThreadPoolExecutor(config)
+    
     def submit_to_pool(self, pool_name: str, fn: Callable, *args, **kwargs) -> Future:
         """
         Submit a task to a specific thread pool.

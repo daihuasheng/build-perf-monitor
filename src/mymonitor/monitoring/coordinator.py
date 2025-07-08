@@ -2,14 +2,13 @@
 Asynchronous monitoring coordination and orchestration.
 
 This module provides the AsyncMonitoringCoordinator that manages the collection
-of memory data from build processes using AsyncIO and ThreadPoolExecutor,
+of memory data from build processes using AsyncIO and managed thread pools,
 replacing the complex multiprocessing approach.
 """
 
 import asyncio
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Set
 
@@ -17,6 +16,7 @@ from ..classification import get_process_category
 from ..models.results import MonitoringResults
 from ..models.runtime import RunContext
 from ..collectors.base import AbstractMemoryCollector, ProcessMemorySample
+from ..executor.thread_pool import get_thread_pool_manager, ManagedThreadPoolExecutor
 from ..validation import handle_error, ErrorSeverity
 from ..config import get_config
 
@@ -27,7 +27,7 @@ class AsyncMonitoringCoordinator:
     """
     Asynchronous coordinator for memory monitoring during build execution.
     
-    This class manages monitoring using AsyncIO and ThreadPoolExecutor,
+    This class manages monitoring using AsyncIO and managed thread pools,
     providing better resource utilization and simpler error handling
     than the multiprocessing approach.
     """
@@ -40,7 +40,7 @@ class AsyncMonitoringCoordinator:
             run_context: Runtime context for the monitoring run
         """
         self.run_context = run_context
-        self.executor: Optional[ThreadPoolExecutor] = None
+        self.executor: Optional[ManagedThreadPoolExecutor] = None
         self.monitoring_tasks: List[asyncio.Task] = []
         self.collectors: List[AbstractMemoryCollector] = []
         self.results: Optional[MonitoringResults] = None
@@ -62,12 +62,11 @@ class AsyncMonitoringCoordinator:
             monitoring_cores: List of CPU core IDs for monitoring workers
         """
         try:
-            # Create ThreadPoolExecutor with configured max workers
+            # Create monitoring executor using thread pool manager
             max_workers = min(len(monitoring_cores), self.max_concurrent_monitors)
-            self.executor = ThreadPoolExecutor(
-                max_workers=max_workers,
-                thread_name_prefix="AsyncMonitor"
-            )
+            thread_pool_manager = get_thread_pool_manager()
+            self.executor = thread_pool_manager.create_monitoring_executor(max_workers=max_workers)
+            self.executor.start()  # Start the managed executor
             
             # Create collectors for each monitoring core
             self.collectors = []
@@ -174,8 +173,8 @@ class AsyncMonitoringCoordinator:
             # Shutdown executor with timeout to prevent hanging
             if self.executor:
                 try:
-                    # Cancel all pending futures first
-                    self.executor.shutdown(wait=False, cancel_futures=True)
+                    # Shutdown the managed executor
+                    self.executor.shutdown(wait=False)
                     # Give it a brief moment to clean up
                     await asyncio.sleep(0.1)
                 except Exception as e:
@@ -256,7 +255,7 @@ class AsyncMonitoringCoordinator:
             # Run sample collection in thread pool - get only ONE sample, not the whole generator
             loop = asyncio.get_event_loop()
             sample_batch = await loop.run_in_executor(
-                self.executor,
+                self.executor.executor,  # Use the internal ThreadPoolExecutor
                 self._get_next_sample_sync,
                 collector
             )
@@ -298,7 +297,7 @@ class AsyncMonitoringCoordinator:
         """
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
-            self.executor,
+            self.executor.executor,  # Use the internal ThreadPoolExecutor
             self._create_collector_sync,
             core_id
         )
