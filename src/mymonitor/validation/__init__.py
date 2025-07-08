@@ -26,11 +26,6 @@ from .strategies import (
     SimpleRetryStrategy,
     get_error_recovery_strategy,
     with_error_recovery,
-    create_file_operation_strategy,
-    create_monitoring_operation_strategy,
-    create_network_operation_strategy,
-    create_process_operation_strategy,
-    register_error_recovery_strategy,
 )
 
 # Validation functions
@@ -65,11 +60,6 @@ __all__ = [
     "SimpleRetryStrategy",
     "get_error_recovery_strategy",
     "with_error_recovery",
-    "create_file_operation_strategy",
-    "create_monitoring_operation_strategy",
-    "create_network_operation_strategy",
-    "create_process_operation_strategy",
-    "register_error_recovery_strategy",
     # Validators
     "validate_command_template",
     "validate_simple_command",

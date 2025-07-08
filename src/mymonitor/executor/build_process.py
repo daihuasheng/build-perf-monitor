@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 
 from ..system.cpu_manager import get_cpu_manager
-from ..system import parse_cpu_cores
 from ..validation import handle_error, ErrorSeverity
 
 logger = logging.getLogger(__name__)
@@ -454,7 +453,7 @@ class BuildProcessManagerFactory:
         elif cpu_scheduling_policy == "manual":
             manual_cores = kwargs.get('manual_build_cores', '')
             if manual_cores:
-                build_cores = parse_cpu_cores(manual_cores)
+                build_cores = get_cpu_manager().parse_core_range_string(manual_cores)
         
         return BuildProcessManager(
             build_command=build_command,

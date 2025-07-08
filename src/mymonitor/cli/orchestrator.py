@@ -16,7 +16,7 @@ from ..models.config import ProjectConfig
 from ..models.runtime import RunContext, RunPaths
 from ..monitoring.coordinator import AsyncMonitoringCoordinator
 from ..executor.build_process import BuildProcessManager
-from ..system.cpu_manager import plan_cpu_allocation
+from ..system.cpu_manager import get_cpu_manager
 from ..executor.thread_pool import (
     initialize_global_thread_pools, 
     shutdown_global_thread_pools, 
@@ -108,7 +108,7 @@ class BuildRunner:
             await self._setup_run_context()
             
             # Plan CPU allocation
-            cpu_plan = plan_cpu_allocation(
+            cpu_plan = get_cpu_manager().plan_cpu_allocation(
                 cores_policy=config.monitor.scheduling_policy,
                 cores_string=config.monitor.manual_build_cores,
                 parallelism_level=self.parallelism_level,

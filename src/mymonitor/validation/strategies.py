@@ -138,12 +138,4 @@ def with_error_recovery(strategy_name: str = "default", error_context: str = "")
     return with_simple_retry(context=error_context)
 
 
-# Legacy compatibility aliases
-create_file_operation_strategy = lambda: SimpleRetryStrategy()
-create_network_operation_strategy = lambda: SimpleRetryStrategy()
-create_process_operation_strategy = lambda: SimpleRetryStrategy()
-create_monitoring_operation_strategy = lambda: SimpleRetryStrategy()
 
-def register_error_recovery_strategy(name: str, strategy: Any) -> None:
-    """Legacy compatibility function - does nothing."""
-    pass

@@ -56,7 +56,6 @@ from .validation import (
 # System utilities
 from .system import (
     check_pidstat_installed,
-    plan_cpu_allocation,
     run_command,
 )
 
@@ -90,7 +89,6 @@ __all__ = [
     "validate_regex_pattern", 
     # System utilities
     "check_pidstat_installed",
-    "plan_cpu_allocation",
     "run_command",
     # Classification
     "get_process_category",
