@@ -343,6 +343,29 @@ class AsyncMonitoringCoordinator:
                 self.run_context.monitoring_interval,
                 **collector_kwargs
             )
+        elif collector_type == "hybrid":
+            from ..collectors.hybrid_collector import HybridMemoryCollector
+            from ..models.hybrid_monitoring import HybridCollectorConfig
+            
+            # Create hybrid collector configuration from app config
+            hybrid_config = HybridCollectorConfig(
+                discovery_interval=app_config.monitor.hybrid_discovery_interval,
+                sampling_workers=app_config.monitor.hybrid_sampling_workers,
+                task_queue_size=app_config.monitor.hybrid_task_queue_size,
+                result_queue_size=app_config.monitor.hybrid_result_queue_size,
+                enable_prioritization=app_config.monitor.hybrid_enable_prioritization,
+                max_retry_count=app_config.monitor.hybrid_max_retry_count,
+                queue_timeout=app_config.monitor.hybrid_queue_timeout,
+                enable_queue_monitoring=app_config.monitor.hybrid_enable_queue_monitoring,
+                batch_result_size=app_config.monitor.hybrid_batch_result_size,
+            )
+            
+            return HybridMemoryCollector(
+                process_pattern=self.run_context.process_pattern,
+                monitoring_interval=self.run_context.monitoring_interval,
+                config=hybrid_config,
+                **collector_kwargs
+            )
         else:
             raise ValueError(f"Unknown collector type: {collector_type}")
     

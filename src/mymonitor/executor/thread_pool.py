@@ -303,22 +303,13 @@ class ThreadPoolManager:
         try:
             configs = configs or {}
             
-            # Create default pools
+            # Create default pools - only monitoring pool is needed
+            # Build and I/O operations are handled by asyncio
             default_pools = {
                 'monitoring': ThreadPoolConfig(
                     max_workers=4,
                     thread_name_prefix="Monitor",
                     enable_cpu_affinity=True
-                ),
-                'build': ThreadPoolConfig(
-                    max_workers=2,
-                    thread_name_prefix="Build",
-                    enable_cpu_affinity=True
-                ),
-                'io': ThreadPoolConfig(
-                    max_workers=2,
-                    thread_name_prefix="IO",
-                    enable_cpu_affinity=False
                 )
             }
             

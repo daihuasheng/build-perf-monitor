@@ -41,6 +41,17 @@ class MonitorConfig:
     
     # [monitor.async_settings] - AsyncIO-specific Configuration
     enable_thread_pool_optimization: bool = True
+    
+    # [monitor.hybrid_collector] - Hybrid Collector Configuration
+    hybrid_discovery_interval: float = 0.01     # 发现Worker扫描间隔（秒）
+    hybrid_sampling_workers: int = 4             # 采样Worker数量
+    hybrid_task_queue_size: int = 1000          # 任务队列大小
+    hybrid_result_queue_size: int = 2000        # 结果队列大小
+    hybrid_enable_prioritization: bool = True   # 启用任务优先级
+    hybrid_max_retry_count: int = 3             # 最大重试次数
+    hybrid_queue_timeout: float = 0.1           # 队列操作超时（秒）
+    hybrid_enable_queue_monitoring: bool = True    # 启用队列性能监控
+    hybrid_batch_result_size: int = 50          # 结果批处理大小
 
 
 @dataclass

@@ -74,7 +74,7 @@ def validate_monitor_config(monitor_data: Dict[str, Any]) -> MonitorConfig:
         
         metric_type = validate_enum_choice(
             collection_settings.get("metric_type", "pss_psutil"),
-            valid_choices=["pss_psutil", "rss_pidstat"],
+            valid_choices=["pss_psutil", "rss_pidstat", "hybrid"],
             field_name="monitor.collection.metric_type"
         )
         
@@ -148,6 +148,66 @@ def validate_monitor_config(monitor_data: Dict[str, Any]) -> MonitorConfig:
         except OSError as e:
             raise ValidationError(f"Cannot create log directory '{log_root_dir}': {e}")
         
+        # Validate hybrid collector settings
+        hybrid_settings = monitor_data.get("hybrid_collector", {})
+        
+        hybrid_discovery_interval = validate_positive_float(
+            hybrid_settings.get("hybrid_discovery_interval", 0.01),
+            min_value=0.001,  # 1ms minimum
+            max_value=1.0,    # 1s maximum
+            field_name="monitor.hybrid_collector.hybrid_discovery_interval"
+        )
+        
+        hybrid_sampling_workers = validate_positive_integer(
+            hybrid_settings.get("hybrid_sampling_workers", 4),
+            min_value=1,
+            max_value=64,  # Reasonable upper bound
+            field_name="monitor.hybrid_collector.hybrid_sampling_workers"
+        )
+        
+        hybrid_task_queue_size = validate_positive_integer(
+            hybrid_settings.get("hybrid_task_queue_size", 1000),
+            min_value=10,
+            max_value=100000,
+            field_name="monitor.hybrid_collector.hybrid_task_queue_size"
+        )
+        
+        hybrid_result_queue_size = validate_positive_integer(
+            hybrid_settings.get("hybrid_result_queue_size", 2000),
+            min_value=10,
+            max_value=100000,
+            field_name="monitor.hybrid_collector.hybrid_result_queue_size"
+        )
+        
+        hybrid_enable_prioritization = hybrid_settings.get("hybrid_enable_prioritization", True)
+        if not isinstance(hybrid_enable_prioritization, bool):
+            raise ValidationError("monitor.hybrid_collector.hybrid_enable_prioritization must be a boolean")
+        
+        hybrid_max_retry_count = validate_positive_integer(
+            hybrid_settings.get("hybrid_max_retry_count", 3),
+            min_value=0,
+            max_value=10,
+            field_name="monitor.hybrid_collector.hybrid_max_retry_count"
+        )
+        
+        hybrid_queue_timeout = validate_positive_float(
+            hybrid_settings.get("hybrid_queue_timeout", 0.1),
+            min_value=0.001,  # 1ms minimum
+            max_value=10.0,   # 10s maximum
+            field_name="monitor.hybrid_collector.hybrid_queue_timeout"
+        )
+        
+        hybrid_enable_queue_monitoring = hybrid_settings.get("hybrid_enable_queue_monitoring", True)
+        if not isinstance(hybrid_enable_queue_monitoring, bool):
+            raise ValidationError("monitor.hybrid_collector.hybrid_enable_queue_monitoring must be a boolean")
+        
+        hybrid_batch_result_size = validate_positive_integer(
+            hybrid_settings.get("hybrid_batch_result_size", 50),
+            min_value=1,
+            max_value=1000,
+            field_name="monitor.hybrid_collector.hybrid_batch_result_size"
+        )
+        
         return MonitorConfig(
             # from [monitor.collection]
             interval_seconds=interval_seconds,
@@ -171,6 +231,16 @@ def validate_monitor_config(monitor_data: Dict[str, Any]) -> MonitorConfig:
             categorization_cache_size=categorization_cache_size,
             # from [monitor.async_settings]
             enable_thread_pool_optimization=enable_thread_pool_optimization,
+            # from [monitor.hybrid_collector]
+            hybrid_discovery_interval=hybrid_discovery_interval,
+            hybrid_sampling_workers=hybrid_sampling_workers,
+            hybrid_task_queue_size=hybrid_task_queue_size,
+            hybrid_result_queue_size=hybrid_result_queue_size,
+            hybrid_enable_prioritization=hybrid_enable_prioritization,
+            hybrid_max_retry_count=hybrid_max_retry_count,
+            hybrid_queue_timeout=hybrid_queue_timeout,
+            hybrid_enable_queue_monitoring=hybrid_enable_queue_monitoring,
+            hybrid_batch_result_size=hybrid_batch_result_size,
         )
         
     except ValidationError as e:

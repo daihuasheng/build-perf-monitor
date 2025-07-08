@@ -79,24 +79,13 @@ class BuildRunner:
             # Get configuration for thread pools
             config = get_config()
             
-            # Create thread pool configurations based on main config
+            # Create thread pool configuration - only monitoring pool is needed
+            # Build and I/O operations are handled by asyncio, not requiring separate thread pools
             thread_pool_configs = {
                 'monitoring': ThreadPoolConfig(
                     max_workers=config.monitor.max_concurrent_monitors,
                     thread_name_prefix=config.monitor.thread_name_prefix,
                     enable_cpu_affinity=config.monitor.enable_cpu_affinity,
-                    shutdown_timeout=config.monitor.graceful_shutdown_timeout
-                ),
-                'build': ThreadPoolConfig(
-                    max_workers=2,
-                    thread_name_prefix="Build",
-                    enable_cpu_affinity=config.monitor.enable_cpu_affinity,
-                    shutdown_timeout=config.monitor.graceful_shutdown_timeout
-                ),
-                'io': ThreadPoolConfig(
-                    max_workers=2,
-                    thread_name_prefix="IO",
-                    enable_cpu_affinity=False,
                     shutdown_timeout=config.monitor.graceful_shutdown_timeout
                 )
             }

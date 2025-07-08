@@ -14,6 +14,14 @@ from .runtime import CpuAllocationPlan, RunContext, RunPaths
 # Result models
 from .results import MonitoringResults
 
+# Hybrid monitoring models
+from .hybrid_monitoring import (
+    ProcessTask, 
+    SampleResult, 
+    HybridCollectorConfig, 
+    HybridCollectorStats
+)
+
 __all__ = [
     # Configuration
     "AppConfig",
@@ -26,4 +34,9 @@ __all__ = [
     "RunPaths",
     # Results
     "MonitoringResults",
+    # Hybrid monitoring
+    "ProcessTask",
+    "SampleResult",
+    "HybridCollectorConfig", 
+    "HybridCollectorStats",
 ]

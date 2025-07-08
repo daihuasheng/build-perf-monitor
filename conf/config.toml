@@ -18,7 +18,8 @@ categorization_cache_size = 4096
 [monitor.collection]
 # The time in seconds between each memory sample. Can be a float.
 interval_seconds = 0.05
-# The type of memory collector to use ('pss_psutil' or 'rss_pidstat').
+# The type of memory collector to use ('pss_psutil', 'rss_pidstat', or 'hybrid').
+# 'hybrid' enables the new producer-consumer architecture with separate discovery and sampling workers.
 metric_type = "pss_psutil"
 # Defines the scanning mode for the pss_psutil collector.
 # - "full_scan": (Default, Safe) Scans all system processes that match the
@@ -76,6 +77,44 @@ thread_name_prefix = "AsyncMonitor"
 # in async monitoring mode, such as adaptive worker scaling and CPU-aware
 # task distribution.
 enable_thread_pool_optimization = true
+
+# ===================================================================
+# Hybrid Collector Configuration
+# Settings for the new hybrid monitoring architecture (experimental)
+# ===================================================================
+[monitor.hybrid_collector]
+# Discovery worker scan interval in seconds (how often to scan for new processes)
+# Lower values provide better process coverage but use more CPU
+hybrid_discovery_interval = 0.01
+
+# Number of sampling workers for parallel memory collection
+# More workers can handle higher process loads but use more resources  
+hybrid_sampling_workers = 4
+
+# Task queue size (number of pending sampling tasks)
+# Larger queues can handle bursts but use more memory
+hybrid_task_queue_size = 1000
+
+# Result queue size (number of completed samples waiting for processing)
+# Should be larger than task queue to avoid blocking sampling workers
+hybrid_result_queue_size = 2000
+
+# Enable task prioritization (compiler processes get higher priority)
+hybrid_enable_prioritization = true
+
+# Maximum number of retry attempts for failed sampling operations
+hybrid_max_retry_count = 3
+
+# Timeout for queue operations in seconds
+# Shorter timeouts make the system more responsive but may drop tasks under load
+hybrid_queue_timeout = 0.1
+
+# Enable detailed performance monitoring and statistics collection
+hybrid_enable_queue_monitoring = true
+
+# Number of samples to batch before yielding results
+# Larger batches improve throughput but increase latency
+hybrid_batch_result_size = 50
 
 
 # ===================================================================

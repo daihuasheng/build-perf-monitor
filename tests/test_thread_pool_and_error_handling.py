@@ -103,7 +103,8 @@ class TestThreadPoolManager:
         # Initialize with default configs
         manager.initialize()
         assert manager.is_initialized
-        assert len(manager.pools) >= 3  # monitoring, build, io
+        assert len(manager.pools) >= 1  # only monitoring pool is needed
+        assert 'monitoring' in manager.pools
         
         # Test pool retrieval
         monitoring_pool = manager.get_pool('monitoring')
@@ -121,8 +122,7 @@ class TestThreadPoolManager:
         # Test stats
         stats = manager.get_all_stats()
         assert 'monitoring' in stats
-        assert 'build' in stats
-        assert 'io' in stats
+        # Only monitoring pool should exist now
         
         # Shutdown
         manager.shutdown_all()
