@@ -18,17 +18,15 @@ MyMonitor 采用模块化架构，明确分离各个关注点：
 
 ```
 src/mymonitor/
-├── cli/                    # 命令行界面
+├── cli/                    # 命令行界面和编排
 ├── config/                 # 配置管理（TOML文件）
 ├── models/                 # 数据模型和结构
 ├── validation/             # 输入验证和错误处理策略
 ├── system/                 # 系统交互（CPU分配、命令执行）
 ├── classification/         # 进程分类引擎
 ├── collectors/             # 内存数据收集（PSS/RSS）
-├── monitoring/             # 监控协调和编排
-├── execution/              # 构建过程执行和清理
-├── runner/                 # 主要监控工作流编排
-└── orchestration/          # 高级组件协调
+├── monitoring/             # 监控协调
+└── executor/               # 构建过程执行和线程池管理
 ```
 
 ## 🛠️ 安装说明

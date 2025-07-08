@@ -20,17 +20,15 @@ MyMonitor follows a modular architecture with clear separation of concerns:
 
 ```
 src/mymonitor/
-├── cli/                    # Command-line interface
+├── cli/                    # Command-line interface and orchestration
 ├── config/                 # Configuration management (TOML files)
 ├── models/                 # Data models and structures
 ├── validation/             # Input validation and error handling strategies
 ├── system/                 # System interaction (CPU allocation, commands)
 ├── classification/         # Process categorization engine
 ├── collectors/             # Memory data collection (PSS/RSS)
-├── monitoring/             # Monitoring coordination and orchestration
-├── execution/              # Build process execution and cleanup
-├── runner/                 # Main monitoring workflow orchestration
-└── orchestration/          # High-level component coordination
+├── monitoring/             # Monitoring coordination
+└── executor/               # Build process execution and thread pool management
 ```
 
 ## 🛠️ Installation
