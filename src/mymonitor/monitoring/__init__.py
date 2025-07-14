@@ -5,8 +5,8 @@ This module provides monitoring coordination and orchestration functionality
 for collecting memory data during build processes using AsyncIO.
 """
 
-from .coordinator import AsyncMonitoringCoordinator
+from .architectures import HybridArchitecture
 
 __all__ = [
-    "AsyncMonitoringCoordinator",
+    "HybridArchitecture",
 ]

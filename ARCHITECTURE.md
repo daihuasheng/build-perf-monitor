@@ -1,8 +1,8 @@
 # MyMonitor 架构文档
 
-> **文档版本**: v1.0  
-> **最后更新**: 2025-07-08  
-> **适用版本**: MyMonitor v2.0+  
+> **文档版本**: v2.0  
+> **最后更新**: 2025-07-14  
+> **适用版本**: MyMonitor v2.0+ (重构后)  
 
 ## 📋 目录
 
@@ -42,11 +42,15 @@ MyMonitor 是一个专业的构建性能监控工具，采用现代化的异步�
 - **清晰边界**: 模块间通过明确接口通信
 - **低耦合**: 最小化模块间依赖
 
-### 2. 异步优先 (Async-First)
+### 2. 混合异步架构 (Hybrid Async Architecture)
 
-- **AsyncIO 架构**: 核心监控使用协程实现
-- **非阻塞 I/O**: 所有 I/O 操作异步化
-- **并发安全**: 使用适当的同步原语
+- **主线程异步循环**: 使用 AsyncIO 协程进行任务调度和协调
+- **同步工作线程**:
+  - 监控线程：使用线程池处理内存采样（唯一需要线程池的地方）
+  - 构建线程：单线程执行构建任务
+  - I/O线程：单线程处理文件I/O操作
+- **性能优化**: 异步分派 + 同步执行的混合模式，兼顾性能和简洁性
+- **职责分离**: 线程管理模块只负责任务调度，具体收集由collector模块负责
 
 ### 3. 配置驱动 (Configuration-Driven)
 
@@ -104,8 +108,18 @@ MyMonitor 是一个专业的构建性能监控工具，采用现代化的异步�
 ┌─────────────────────────────────────────────────────────────┐
 │                    Monitoring Layer                         │
 │  ┌─────────────────┐    ┌─────────────────┐                │
-│  │ Async Monitoring│    │ Memory          │                │
-│  │ Coordinator     │    │ Collectors      │                │
+│  │ HybridArchitect │    │ Collector       │                │
+│  │ ure (Producer-  │    │ Factory         │                │
+  │ Consumer)       │    │                 │                │
+│  └─────────────────┘    └─────────────────┘                │
+└─────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    Collection Layer                         │
+│  ┌─────────────────┐    ┌─────────────────┐                │
+│  │ Memory          │    │ Async Sample    │                │
+│  │ Collectors      │    │ Processing      │                │
 │  └─────────────────┘    └─────────────────┘                │
 └─────────────────────────────────────────────────────────────┘
                                 │
@@ -155,11 +169,20 @@ class BuildRunner:
     """主要的异步构建监控器，协调构建执行和监控"""
     
     async def run_async(self) -> bool:
-        """运行完整的构建监控流程"""
+        """运行完整的构建监控流程 - 直接使用 HybridArchitecture"""
         
     def run(self) -> bool:
         """同步包装器，为 CLI 使用"""
 ```
+
+**重构变化**:
+
+- **简化架构**: CLI 直接使用 HybridArchitecture，无中间抽象层
+- **统一工厂创建**: CollectorFactory 创建逻辑集中在 RunContext.create_collector_factory()
+- **专用线程池**: 线程池管理专注于监控任务，构建和I/O任务使用单线程异步处理
+- **依赖注入**: HybridArchitecture 通过构造函数接收线程池管理器，职责分离清晰
+- **分类逻辑分离**: 进程分类从采样阶段移至聚合阶段，提高性能
+- **更清晰的依赖**: BuildRunner → HybridArchitecture → CollectorFactory → Collectors
 
 **设计特点**:
 
@@ -213,12 +236,12 @@ def validate_monitor_config(config: MonitorConfig) -> None:
 
 ### 4. 执行层 (`executor/`)
 
-**职责**: 构建进程管理和线程池管理
+**职责**: 构建进程管理和监控专用线程池管理
 
 **核心组件**:
 
 - **`BuildProcessManager`**: 异步构建进程执行器
-- **`ThreadPoolManager`**: 全局线程池管理
+- **`ThreadPoolManager`**: 监控专用线程池管理
 - **`ThreadPoolConfig`**: 线程池配置
 
 **关键特性**:
@@ -237,57 +260,76 @@ class BuildProcessManager:
         """取消运行中的构建"""
 ```
 
-**异步特性**:
+**线程池特性**:
 
-- 非阻塞进程启动和等待
-- 支持取消和超时
-- 线程池中执行 CPU 密集型操作
+- 专注于监控任务的线程池管理
+- 构建和I/O任务使用单线程异步处理
+- CPU亲和性绑定确保监控性能
+- 支持取消和超时的线程池任务
 
 ### 5. 监控层 (`monitoring/`)
 
-**职责**: 异步内存监控协调
+**职责**: 混合架构异步监控
 
 **核心类**:
 
 ```python
-class AsyncMonitoringCoordinator:
-    """异步监控协调器"""
+class HybridArchitecture:
+    """混合监控架构 - 主线程异步循环 + 多工作线程处理"""
     
-    async def setup_monitoring(self, monitoring_cores: List[int]) -> None:
-        """设置监控基础设施"""
-        
     async def start_monitoring(self, build_pid: int) -> None:
         """开始监控指定进程"""
         
     async def stop_monitoring(self) -> None:
         """停止监控并收集结果"""
+        
+    async def get_results(self) -> MonitoringResults:
+        """获取监控结果"""
 ```
 
-**监控机制**:
+**架构特点**:
 
-- 基于 `asyncio.create_task()` 的后台监控
-- 可配置的采样间隔
-- 支持多种内存收集器
+- **生产者-消费者模式**: 发现工作者 + 采样工作者
+- **异步协调**: 主线程使用 asyncio 事件循环
+- **专用线程池**: 监控任务使用专门的线程池处理
+- **统一工厂管理**: CollectorFactory 创建逻辑集中化
 
 ### 6. 收集器层 (`collectors/`)
 
 **职责**: 内存数据收集的具体实现
 
+**重构变化**:
+
+- **CollectorFactory**: 位于 `collectors/factory.py`，专注于收集器实例创建
+- **更清晰的模块边界**: 收集器相关逻辑集中在 collectors 模块
+
 **收集器类型**:
 
-- **`PSS_PSUtil`**: 基于 psutil 的 PSS 内存收集
-- **`RSS_PidStat`**: 基于 pidstat 的 RSS 内存收集
-- **`AsyncMemoryCollector`**: 异步收集器包装
+- **`PssPsutilCollector`**: 基于 psutil 的 PSS 内存收集
+- **`RssPidstatCollector`**: 基于 pidstat 的 RSS 内存收集
 
 **设计模式**:
 
 ```python
-class BaseMemoryCollector(ABC):
-    """内存收集器基类"""
+class AbstractMemoryCollector(ABC):
+    """内存收集器抽象基类"""
     
-    @abstractmethod
-    async def collect_memory_async(self) -> List[ProcessInfo]:
-        """异步收集内存数据"""
+    def collect_single_sample(self) -> List[ProcessMemorySample]:
+        """收集单次内存数据样本 - 同步方法，由架构层调用"""
+```
+
+**工厂模式**:
+
+```python
+class CollectorFactory:
+    """收集器工厂 - 根据配置创建收集器实例"""
+    
+    def create_collector(self, collector_cpu_core: int) -> AbstractMemoryCollector:
+        """创建内存收集器实例"""
+```
+    
+    def collect_single_sample(self) -> List[ProcessMemorySample]:
+        """收集单次内存数据样本"""
 ```
 
 **优化特性**:
@@ -381,7 +423,10 @@ TOML 文件 → 解析器 → 验证器 → 配置模型 → 缓存
 ### 2. 监控流
 
 ```text
-构建启动 → 进程发现 → 内存收集 → 进程分类 → 数据聚合 → 结果存储
+构建启动 → 进程发现 → 任务队列 → 内存采样 → 结果队列 → 数据聚合 → 进程分类 → 结果存储
+    ↓           ↓           ↓           ↓           ↓           ↓           ↓           ↓
+构建进程    发现Worker   异步队列    采样Workers   异步队列    结果Worker   分类器     MonitoringResults
+(单线程)   (1个协程)    (缓冲)     (N个协程)    (缓冲)     (1个协程)   (缓存)      (持久化)
 ```
 
 ### 3. 可视化流
@@ -434,8 +479,11 @@ scheduling_policy = "adaptive"  # CPU 调度策略
 monitor_core = 0               # 监控进程核心
 enable_cpu_affinity = true     # 启用 CPU 亲和性
 
-[monitor.async_settings]
-enable_thread_pool_optimization = true  # 线程池优化
+[monitor.hybrid]
+hybrid_discovery_interval = 0.01     # 发现间隔
+hybrid_sampling_workers = 4          # 采样工作线程数
+hybrid_task_queue_size = 1000        # 任务队列大小
+hybrid_enable_prioritization = true  # 任务优先级
 ```
 
 #### 2. 项目配置 (`projects.toml`)
@@ -472,6 +520,114 @@ patterns = ["cc1", "cc1plus", "collect2"]
 ---
 
 ## 监控流程
+
+### 混合异步监控架构
+
+MyMonitor 采用**混合异步架构**，结合异步主线程和同步工作线程的优势：
+
+#### 线程分工和数量配置
+
+**1. 主线程 (1个)**
+- **类型**: 异步事件循环线程
+- **职责**: 任务调度协调、异步队列管理、生命周期控制、信号处理
+
+**2. 监控线程池 (可配置，默认4个)**
+- **类型**: 同步工作线程池 (`ManagedThreadPoolExecutor`)
+- **职责**: 内存数据采样、进程信息收集、CPU亲和性绑定
+- **数量**: `min(4, parallelism_level)` 或配置指定
+
+**3. 构建线程 (1个)**
+- **类型**: 单线程异步执行器
+- **职责**: 执行构建命令、构建进程管理、构建状态监控
+
+**4. I/O线程 (1个)**
+- **类型**: 单线程异步执行器
+- **职责**: 文件读写操作、日志输出、结果序列化
+
+#### CPU核心分配策略
+
+**Adaptive策略 (自适应分配)**:
+
+1. **构建任务核心分配**:
+   - 基础分配: `max(1.25 * parallelism_level, parallelism_level + 4)`
+   - 目标: 为构建任务提供充足的CPU资源
+
+2. **监控任务核心分配**:
+   - 优先级: 在构建任务分配后，从剩余核心中分配
+   - 上限: 最多16个核心
+   - 策略: 有剩余核心时独立分配，无剩余时与构建任务共享
+
+3. **资源不足处理**:
+   - 警告条件: 构建任务分配核心数 < parallelism_level
+   - 处理方式: 输出警告但继续执行
+
+**Manual策略 (手动分配)**:
+- 根据配置文件中的 `manual_build_cores` 和 `manual_monitoring_cores` 分配
+
+### 详细执行流程
+
+#### 阶段 1: 初始化阶段
+
+```text
+BuildRunner.run_async → 创建RunContext → 初始化线程池 → CPU核心分配规划 → 创建HybridArchitecture → 设置监控基础设施
+```
+
+1. **配置加载**: 加载TOML配置文件
+2. **线程池初始化**: 创建监控专用线程池
+3. **CPU分配规划**: 根据策略分配CPU核心
+4. **监控架构创建**: 通过依赖注入创建HybridArchitecture
+
+#### 阶段 2: 监控设置阶段
+
+```text
+setup_monitoring → 创建发现收集器 → 创建采样收集器 → 初始化异步队列 → 创建停止事件
+```
+
+1. **收集器创建**: 创建发现收集器(1个)和采样收集器(多个)
+2. **队列初始化**: 创建任务队列和结果队列
+3. **事件初始化**: 创建停止事件用于优雅关闭
+
+#### 阶段 3: 构建执行阶段
+
+**构建进程启动**:
+```python
+# 单线程异步启动构建
+self.process, self.build_pid = await loop.run_in_executor(
+    None, self._start_build_process
+)
+```
+
+**监控Workers启动**:
+
+- **发现Worker (1个异步协程)**: 周期性发现进程，放入任务队列
+- **采样Workers (N个异步协程)**: 从任务队列获取任务，执行内存采样
+- **结果处理Worker (1个异步协程)**: 从结果队列收集采样结果
+
+#### 阶段 4: 同步异步交互机制
+
+**异步到同步的调用**:
+```python
+# 在监控线程池中执行同步收集
+samples = await loop.run_in_executor(
+    monitoring_pool.executor,
+    collector.collect_single_sample
+)
+```
+
+**线程池中的CPU亲和性设置**:
+- 每个监控线程绑定到特定CPU核心
+- 避免线程迁移开销，提高缓存局部性
+
+#### 阶段 5: 结果聚合和清理
+
+```text
+构建完成 → 停止监控 → 等待所有Workers完成 → 聚合采样结果 → 进程分类处理 → 生成MonitoringResults → 清理资源
+```
+
+1. **停止信号**: 设置停止事件
+2. **等待Workers**: 等待所有异步任务完成
+3. **结果聚合**: 在聚合阶段进行进程分类(性能优化)
+4. **资源清理**: 确保所有资源正确释放
 
 ### 异步监控架构
 
@@ -662,8 +818,9 @@ interval_seconds = 0.05  # 更高频率采样
 [monitor.scheduling]
 max_concurrent_monitors = 8  # 增加并发度
 
-[monitor.async_settings]
-enable_thread_pool_optimization = true  # 启用优化
+[monitor.hybrid]
+hybrid_sampling_workers = 8  # 增加采样线程数
+hybrid_enable_prioritization = true  # 启用优化
 ```
 
 ---

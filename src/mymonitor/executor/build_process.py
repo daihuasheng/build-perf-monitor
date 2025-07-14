@@ -35,8 +35,7 @@ class BuildProcessManager:
         build_command: str,
         build_directory: Path,
         build_cores: Optional[List[int]] = None,
-        timeout: float = 3600.0,
-        executor: Optional[ThreadPoolExecutor] = None
+        timeout: float = 3600.0
     ):
         """
         Initialize the async build runner.
@@ -46,13 +45,11 @@ class BuildProcessManager:
             build_directory: Directory where to run the build
             build_cores: CPU cores to bind the build process to
             timeout: Maximum time to wait for build completion (seconds)
-            executor: ThreadPoolExecutor to use for async operations
         """
         self.build_command = build_command
         self.build_directory = Path(build_directory)
         self.build_cores = build_cores or []
         self.timeout = timeout
-        self.executor = executor
         
         # Process management
         self.process: Optional[subprocess.Popen] = None
@@ -91,17 +88,12 @@ class BuildProcessManager:
             # Record start time
             self.start_time = time.time()
             
-            # Start the build process in a thread pool
+            # Start the build process using default executor (single thread)
             loop = asyncio.get_event_loop()
             
-            if self.executor:
-                self.process, self.build_pid = await loop.run_in_executor(
-                    self.executor, self._start_build_process
-                )
-            else:
-                self.process, self.build_pid = await loop.run_in_executor(
-                    None, self._start_build_process
-                )
+            self.process, self.build_pid = await loop.run_in_executor(
+                None, self._start_build_process
+            )
                 
             logger.info(f"Build process started with PID {self.build_pid}")
             return self.build_pid
@@ -226,14 +218,9 @@ class BuildProcessManager:
         try:
             loop = asyncio.get_event_loop()
             
-            if self.executor:
-                stdout, stderr = await loop.run_in_executor(
-                    self.executor, self._get_process_output
-                )
-            else:
-                stdout, stderr = await loop.run_in_executor(
-                    None, self._get_process_output
-                )
+            stdout, stderr = await loop.run_in_executor(
+                None, self._get_process_output
+            )
                 
             self.stdout_data = stdout
             self.stderr_data = stderr
@@ -296,14 +283,9 @@ class BuildProcessManager:
             
         loop = asyncio.get_event_loop()
         
-        if self.executor:
-            return_code = await loop.run_in_executor(
-                self.executor, self.process.wait
-            )
-        else:
-            return_code = await loop.run_in_executor(
-                None, self.process.wait
-            )
+        return_code = await loop.run_in_executor(
+            None, self.process.wait
+        )
             
         return return_code
     
@@ -427,7 +409,6 @@ class BuildProcessManagerFactory:
         parallelism_level: int = 1,
         timeout: float = 3600.0,
         cpu_scheduling_policy: str = "adaptive",
-        executor: Optional[ThreadPoolExecutor] = None,
         **kwargs
     ) -> BuildProcessManager:
         """
@@ -439,7 +420,6 @@ class BuildProcessManagerFactory:
             parallelism_level: Build parallelism level (-j value)
             timeout: Build timeout in seconds
             cpu_scheduling_policy: CPU scheduling policy ("adaptive" or "manual")
-            executor: ThreadPoolExecutor to use
             **kwargs: Additional arguments for build runner
             
         Returns:
@@ -459,8 +439,7 @@ class BuildProcessManagerFactory:
             build_command=build_command,
             build_directory=build_directory,
             build_cores=build_cores,
-            timeout=timeout,
-            executor=executor
+            timeout=timeout
         )
     
     @staticmethod

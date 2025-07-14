@@ -271,8 +271,3 @@ class HybridCollectorStats:
         total_samples = stats['samples_completed'] + stats['samples_failed']
         if total_samples > 0:
             stats['average_duration'] = stats['total_duration'] / total_samples
-
-
-# 便于导入的类型别名
-ProcessTaskQueue = 'queue.Queue[ProcessTask]'
-SampleResultQueue = 'queue.Queue[SampleResult]'

@@ -16,21 +16,21 @@ class MonitorConfig:
     Configuration for the monitor's global behavior, loaded from `config.toml`.
     """
 
-    # [monitor.general]
+    # [monitor.general] - 必需字段
     default_jobs: List[int]
     skip_plots: bool
     log_root_dir: Path
     categorization_cache_size: int
 
-    # [monitor.collection]
+    # [monitor.collection] - 必需字段
     interval_seconds: float
-    metric_type: str
+    metric_type: str  # "pss_psutil" 或 "rss_pidstat" - 指标类型
     pss_collector_mode: str
     process_check_interval: float
     monitoring_timeout: float
     graceful_shutdown_timeout: float
 
-    # [monitor.scheduling] - Unified Policy
+    # [monitor.scheduling] - 必需字段
     scheduling_policy: str
     monitor_core: int
     manual_build_cores: str
@@ -38,20 +38,18 @@ class MonitorConfig:
     enable_cpu_affinity: bool
     max_concurrent_monitors: int
     thread_name_prefix: str
-    
-    # [monitor.async_settings] - AsyncIO-specific Configuration
-    enable_thread_pool_optimization: bool = True
-    
-    # [monitor.hybrid_collector] - Hybrid Collector Configuration
-    hybrid_discovery_interval: float = 0.01     # 发现Worker扫描间隔（秒）
-    hybrid_sampling_workers: int = 4             # 采样Worker数量
-    hybrid_task_queue_size: int = 1000          # 任务队列大小
-    hybrid_result_queue_size: int = 2000        # 结果队列大小
-    hybrid_enable_prioritization: bool = True   # 启用任务优先级
-    hybrid_max_retry_count: int = 3             # 最大重试次数
-    hybrid_queue_timeout: float = 0.1           # 队列操作超时（秒）
-    hybrid_enable_queue_monitoring: bool = True    # 启用队列性能监控
-    hybrid_batch_result_size: int = 50          # 结果批处理大小
+
+    # [monitor.hybrid] - 混合架构配置（有默认值）
+    hybrid_discovery_interval: float = 0.01  # 发现Worker扫描间隔（秒）
+    hybrid_sampling_workers: int = 4  # 采样Worker数量
+    hybrid_task_queue_size: int = 1000  # 任务队列大小
+    hybrid_result_queue_size: int = 2000  # 结果队列大小
+    hybrid_enable_prioritization: bool = True  # 启用任务优先级
+    hybrid_max_retry_count: int = 3  # 最大重试次数
+    hybrid_queue_timeout: float = 0.1  # 队列操作超时时间（秒）
+    hybrid_worker_timeout: float = 5.0  # Worker操作超时时间（秒）
+    hybrid_enable_queue_monitoring: bool = True  # 启用队列监控
+    hybrid_batch_result_size: int = 50  # 结果批处理大小
 
 
 @dataclass
@@ -97,7 +95,7 @@ class RuleConfig:
     pattern: Optional[str] = None
     # Optional comment describing the rule.
     comment: str = ""
-    
+
     def __post_init__(self):
         """Post-initialization processing to handle pattern/patterns compatibility."""
         # If both pattern and patterns are provided, prefer patterns

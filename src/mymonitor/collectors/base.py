@@ -141,3 +141,23 @@ class AbstractMemoryCollector(ABC):
             objects collected during one sampling interval.
         """
         pass
+
+    def collect_single_sample(self) -> List[ProcessMemorySample]:
+        """
+        Collect a single snapshot of process memory samples.
+
+        This method performs one round of sampling and returns the results immediately.
+        It's designed for one-off sampling operations in the hybrid architecture,
+        avoiding the overhead of the generator interface when only a single sample is needed.
+
+        Returns:
+            A list of ProcessMemorySample objects representing all monitored
+            processes at the current point in time.
+        """
+        try:
+            # Use the existing read_samples generator, but only get the first result
+            samples_iterator = self.read_samples()
+            return next(samples_iterator, [])
+        except Exception as e:
+            logger.error(f"Error collecting single sample: {e}")
+            return []
