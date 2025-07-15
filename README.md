@@ -14,6 +14,7 @@ MyMonitor is a comprehensive build performance monitoring tool that tracks memor
 - **Modular Architecture**: Clean, maintainable codebase with specialized modules
 - **Advanced Error Handling**: Robust retry mechanisms and circuit breaker patterns
 - **Comprehensive Reporting**: Hierarchical category statistics and build summaries
+- **Complete Test Coverage**: 104 test cases ensuring system reliability
 
 ### 🔥 New: Hybrid Monitoring
 
@@ -228,12 +229,35 @@ uv run pytest -v
 
 ### Test Coverage
 
-MyMonitor includes comprehensive test coverage:
-- **Basic monitoring**: End-to-end workflow validation
-- **Process classification**: Rule engine and categorization
-- **Plotting tools**: Chart generation and format validation
-- **Configuration**: TOML parsing and validation
-- **System utilities**: CPU allocation and process management
+MyMonitor includes comprehensive test coverage with 104 test cases:
+
+#### Test Pyramid Structure
+- **Unit Tests (81)**: Core module functionality and edge cases
+- **Integration Tests (8)**: Module interaction and configuration validation
+- **Performance Tests (9)**: System performance characteristics
+- **End-to-End Tests (6)**: Complete workflow validation
+
+#### Test Categories
+- **Monitoring Workflow**: Complete build monitoring scenarios
+- **Process Classification**: Rule engine and categorization logic
+- **CPU Management**: Resource allocation and thread pool management
+- **Configuration**: TOML parsing, validation, and error handling
+- **Error Recovery**: Fault tolerance and graceful degradation
+
+#### Running Tests
+```bash
+# Run all tests (104 test cases)
+uv run pytest
+
+# Run by category
+uv run pytest tests/unit/        # Unit tests
+uv run pytest tests/integration/ # Integration tests
+uv run pytest tests/performance/ # Performance tests
+uv run pytest tests/e2e/         # End-to-end tests
+
+# Run with coverage
+uv run pytest --cov=src/mymonitor --cov-report=html
+```
 
 ### Code Quality
 
@@ -249,7 +273,7 @@ The codebase follows modern Python practices:
 - **Modular Architecture**: Replaced monolithic files with specialized modules
 - **Enhanced Error Handling**: Added retry mechanisms, circuit breakers, and recovery strategies
 - **Improved CLI**: Added `-p` alias and better argument validation
-- **Better Testing**: Expanded test coverage with 60+ test cases
+- **Better Testing**: Expanded test coverage with 104 test cases
 
 ### Summary and Visualization Enhancements
 - **Hierarchical Statistics**: Major/minor category grouping in summaries
