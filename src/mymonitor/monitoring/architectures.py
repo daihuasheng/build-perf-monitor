@@ -151,6 +151,10 @@ class HybridArchitecture:
             # 启动采样Workers
             self.sampling_tasks = []
             for i, collector in enumerate(self.sampling_collectors):
+                # 启动采样收集器
+                collector.build_process_pid = build_process_pid
+                collector.start()
+
                 task = asyncio.create_task(
                     self._sampling_worker(collector, i), name=f"hybrid-sampling-{i}"
                 )

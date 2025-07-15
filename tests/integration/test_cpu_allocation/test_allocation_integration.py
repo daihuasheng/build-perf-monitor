@@ -160,8 +160,13 @@ class TestCPUAllocationIntegration:
         manager.is_initialized = False
         manager.pools.clear()
 
-    def test_run_context_integration(self, sample_config_data, temp_dir):
+    def test_run_context_integration(self, sample_config_data, temp_dir, config_files):
         """Test RunContext integration with CPU allocation."""
+        # Set up configuration for this test
+        from mymonitor.config import set_config_path
+
+        set_config_path(config_files["config"])
+
         # 1. Create run paths
         from mymonitor.models.runtime import RunPaths
 
