@@ -1,0 +1,24 @@
+# Test projects configuration for MyMonitor test suite
+
+[projects]
+
+[projects.test_project]
+name = "test_project"
+dir = "/tmp/test_project"
+build_command = "make -j<N>"
+clean_command = "make clean"
+description = "Test project for unit testing"
+
+[projects.small_project]
+name = "small_project"
+dir = "/tmp/small_project"
+build_command = "gcc -o output main.c"
+clean_command = "rm -f output"
+description = "Small test project with simple build"
+
+[projects.cmake_project]
+name = "cmake_project"
+dir = "/tmp/cmake_project"
+build_command = "cmake --build build -- -j<N>"
+clean_command = "cmake --build build --target clean"
+description = "CMake-based test project"

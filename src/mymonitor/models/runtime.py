@@ -8,7 +8,11 @@ including paths, context, and CPU allocation plans.
 import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..collectors.factory import CollectorFactory
+    from ..executor.thread_pool import ThreadPoolConfig
 
 
 @dataclass

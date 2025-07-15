@@ -1,0 +1,33 @@
+# Test configuration file for MyMonitor test suite
+
+[monitor]
+
+[monitor.general]
+default_jobs = [4, 8, 16]
+log_level = "INFO"
+enable_detailed_logging = false
+
+[monitor.collection]
+interval_seconds = 0.05
+collector_type = "pss_psutil"
+pss_collector_mode = "full_scan"
+
+[monitor.scheduling]
+scheduling_policy = "adaptive"
+enable_cpu_affinity = true
+max_concurrent_monitors = 4
+thread_name_prefix = "MonitorWorker"
+manual_build_cores = ""
+manual_monitoring_cores = ""
+
+[monitor.hybrid]
+hybrid_discovery_interval = 0.01
+hybrid_sampling_workers = 4
+hybrid_task_queue_size = 1000
+hybrid_result_queue_size = 2000
+hybrid_enable_prioritization = true
+hybrid_max_retry_count = 3
+hybrid_queue_timeout = 0.1
+hybrid_worker_timeout = 5.0
+hybrid_enable_queue_monitoring = true
+hybrid_batch_result_size = 50

@@ -589,12 +589,15 @@ def _validate_core_range_format(core_range: str, field_name: str) -> None:
             f"Use format like '0-3' or '0,2,4' or '0-1,4-7'"
         )
 
-    # Check for invalid patterns like "0-", "-3", "0--3"
-    if re.search(r"(^-)|(-$)|(--)", core_range.strip()):
-        raise ValidationError(
-            f"{field_name} has invalid format. "
-            f"Use format like '0-3' or '0,2,4' or '0-1,4-7'"
-        )
+    # First check for negative numbers specifically (not ranges like "0-7")
+    if re.search(r"(^|,)-\d+", core_range.strip()):
+        # Extract the negative number for error message
+        negative_nums = re.findall(r"(?:^|,)-(\d+)", core_range)
+        if negative_nums:
+            raise ValidationError(
+                f"{field_name} contains invalid core number -{negative_nums[0]}. "
+                f"Core numbers must be between 0 and 1023"
+            )
 
     # Check for reasonable core numbers (0-1023)
     parts = re.findall(r"\d+", core_range)
@@ -608,3 +611,10 @@ def _validate_core_range_format(core_range: str, field_name: str) -> None:
                 f"{field_name} contains invalid core number {core_num}. "
                 f"Core numbers must be between 0 and 1023"
             )
+
+    # Check for invalid patterns like "0-", "0--3", ",0", "0,"
+    if re.search(r"(-$)|(--)|^,|,$", core_range.strip()):
+        raise ValidationError(
+            f"{field_name} has invalid format. "
+            f"Use format like '0-3' or '0,2,4' or '0-1,4-7'"
+        )

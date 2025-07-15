@@ -1,0 +1,49 @@
+# Test classification rules for MyMonitor test suite
+
+[[rules]]
+priority = 100
+major_category = "Compiler"
+category = "gcc"
+match_type = "regex"
+match_field = "cmd_name"
+patterns = ["^gcc.*", "^g\\+\\+.*"]
+
+[[rules]]
+priority = 90
+major_category = "Linker"
+category = "ld"
+match_type = "regex"
+match_field = "cmd_name"
+patterns = ["^ld$", "^ld\\..*"]
+
+[[rules]]
+priority = 80
+major_category = "Build_Tool"
+category = "make"
+match_type = "in_list"
+match_field = "cmd_name"
+patterns = ["make", "gmake", "ninja"]
+
+[[rules]]
+priority = 70
+major_category = "Archiver"
+category = "ar"
+match_type = "regex"
+match_field = "cmd_name"
+patterns = ["^ar$"]
+
+[[rules]]
+priority = 60
+major_category = "Preprocessor"
+category = "cpp"
+match_type = "regex"
+match_field = "cmd_name"
+patterns = ["^cpp$"]
+
+[[rules]]
+priority = 50
+major_category = "Assembler"
+category = "as"
+match_type = "regex"
+match_field = "cmd_name"
+patterns = ["^as$", "^gas$"]
