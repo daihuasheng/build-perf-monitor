@@ -61,9 +61,18 @@ class DataStorageManager:
         """
         Save complete monitoring results to storage.
 
+        This method orchestrates the saving of all monitoring data including:
+        - Memory samples in the configured format (Parquet/JSON)
+        - Runtime metadata (build configuration, system info)
+        - Analysis results (statistics, peak memory usage)
+        - Human-readable summary logs
+
         Args:
             results: MonitoringResults object containing all collected data
-            run_context: Runtime context with metadata
+            run_context: Runtime context with build and system metadata
+
+        Raises:
+            Exception: If any storage operation fails
         """
         try:
             logger.info("Saving monitoring results...")
@@ -91,7 +100,21 @@ class DataStorageManager:
             raise
 
     def _save_memory_samples(self, samples_data: List[Dict[str, Any]]) -> None:
-        """Save memory samples data."""
+        """
+        Save memory samples data to the configured storage format.
+
+        This method converts the raw memory samples to a Polars DataFrame
+        and saves it using the configured storage format (Parquet or JSON).
+        If legacy format generation is enabled, it will also save in CSV format.
+
+        Args:
+            samples_data: List of dictionaries containing memory sample data
+                Each dictionary represents one memory measurement with keys like
+                'timestamp', 'pid', 'process_name', 'rss_kb', etc.
+
+        Raises:
+            Exception: If the save operation fails
+        """
         if not samples_data:
             logger.warning("No memory samples to save")
             return
@@ -122,7 +145,21 @@ class DataStorageManager:
             logger.info(f"Saved legacy CSV format to: {legacy_path}")
 
     def _save_metadata(self, run_context: Any) -> None:
-        """Save run metadata."""
+        """
+        Save runtime metadata to JSON format.
+
+        This method extracts relevant metadata from the run context and saves
+        it as a JSON file for later analysis and debugging. The metadata includes
+        build configuration, system settings, and monitoring parameters.
+
+        Args:
+            run_context: Runtime context object containing build and system metadata
+                Expected attributes include project_name, build_command, CPU settings, etc.
+
+        Note:
+            Metadata is always saved in JSON format for human readability,
+            regardless of the configured storage format for data files.
+        """
         metadata = {
             "project_name": getattr(run_context, "project_name", "unknown"),
             "project_dir": str(getattr(run_context, "project_dir", "")),
@@ -147,7 +184,21 @@ class DataStorageManager:
         logger.debug(f"Saved metadata to: {metadata_path}")
 
     def _save_analysis_results(self, results: MonitoringResults) -> None:
-        """Save analysis results."""
+        """
+        Save processed analysis results to JSON format.
+
+        This method extracts key statistics and analysis results from the
+        MonitoringResults object and saves them in a structured JSON format
+        for easy consumption by analysis tools and scripts.
+
+        Args:
+            results: MonitoringResults object containing processed statistics
+                including peak memory usage, category breakdowns, and sample counts
+
+        Note:
+            Analysis results are always saved in JSON format for structured
+            access by downstream analysis tools.
+        """
         analysis_data = {
             "peak_overall_memory_kb": results.peak_overall_memory_kb,
             "peak_overall_memory_epoch": results.peak_overall_memory_epoch,
@@ -221,13 +272,34 @@ class DataStorageManager:
 
     def load_memory_samples(self, columns: Optional[List[str]] = None) -> pl.DataFrame:
         """
-        Load memory samples from storage.
+        Load memory samples from storage with optional column pruning.
+
+        This method loads the memory samples data from the configured storage format.
+        It supports column pruning for better performance when only specific columns
+        are needed for analysis.
 
         Args:
-            columns: Optional list of columns to load (for performance)
+            columns: Optional list of columns to load (for performance optimization)
+                When specified, only these columns will be loaded from storage,
+                significantly reducing memory usage and improving performance
+                for large datasets. Common columns to select include:
+                ["timestamp", "pid", "process_name", "rss_kb", "category"]
 
         Returns:
-            Polars DataFrame with memory samples
+            Polars DataFrame with memory samples containing requested columns
+
+        Raises:
+            FileNotFoundError: If the memory samples file doesn't exist
+            Exception: If any other error occurs during loading
+
+        Examples:
+            # Load all columns
+            df = storage_manager.load_memory_samples()
+
+            # Load only specific columns for better performance
+            df = storage_manager.load_memory_samples(
+                columns=["timestamp", "pid", "rss_kb"]
+            )
         """
         if self.storage_format == "parquet":
             file_path = self.output_dir / "memory_samples.parquet"
@@ -243,10 +315,28 @@ class DataStorageManager:
 
     def get_storage_info(self) -> Dict[str, Any]:
         """
-        Get information about stored data files.
+        Get comprehensive information about stored files and storage configuration.
+
+        This method provides detailed information about the storage setup and
+        existing files, useful for debugging, monitoring, and analysis tools.
 
         Returns:
-            Dictionary with file information
+            Dictionary containing storage information with the following structure:
+            {
+                "storage_format": str,      # Current storage format (parquet/json)
+                "compression": str,         # Compression algorithm used
+                "output_dir": str,          # Output directory path
+                "files": {                  # Information about existing files
+                    "filename": {
+                        "size_bytes": int,  # File size in bytes
+                        "exists": bool      # Whether file exists
+                    }
+                }
+            }
+
+        Note:
+            This method checks for all possible output files including main data files
+            and legacy formats, providing a complete overview of the storage state.
         """
         info = {
             "storage_format": self.storage_format,

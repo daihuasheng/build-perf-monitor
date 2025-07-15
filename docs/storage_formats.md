@@ -1,219 +1,221 @@
-# 数据存储格式
+# Storage Formats
 
-## 概述
+> **Languages**: [English](storage_formats.md) | [中文](storage_formats.zh-CN.md)
 
-监测系统现在支持高效的 Parquet 格式存储，相比传统的 CSV/JSON 格式提供了显著的性能和存储优势。
+## Overview
 
-## 支持的格式
+The monitoring system now supports efficient Parquet format storage, providing significant performance and storage advantages compared to traditional CSV/JSON formats.
 
-### Parquet 格式（推荐）
+## Supported Formats
 
-**优势：**
-- **存储效率高**：相比 CSV/JSON 减少 75-80% 存储空间
-- **查询性能好**：列式存储，只读取需要的列
-- **内置压缩**：支持多种压缩算法
-- **模式保留**：保留数据类型信息
-- **分析友好**：与 Pandas、Polars、Spark 等工具无缝集成
+### Parquet Format (Recommended)
 
-**压缩算法：**
-- `snappy`（默认）：平衡压缩率和速度
-- `gzip`：更高压缩率，较慢
-- `brotli`：高压缩率
-- `lz4`：快速压缩
-- `zstd`：现代高效压缩
+**Advantages:**
+- **High Storage Efficiency**: 75-80% space reduction compared to CSV/JSON
+- **Excellent Query Performance**: Columnar storage, read only needed columns
+- **Built-in Compression**: Supports multiple compression algorithms
+- **Schema Preservation**: Retains data type information
+- **Analytics-Friendly**: Seamless integration with Pandas, Polars, Spark, etc.
 
-### JSON 格式
+**Compression Algorithms:**
+- `snappy` (default): Balanced compression ratio and speed
+- `gzip`: Higher compression ratio, slower
+- `brotli`: High compression ratio
+- `lz4`: Fast compression
+- `zstd`: Modern efficient compression
 
-用于元数据和小型配置文件，保持人类可读性。
+### JSON Format
 
-## 配置
+Used for metadata and small configuration files, maintaining human readability.
 
-在 `conf/config.toml` 中配置存储格式：
+## Configuration
+
+Configure storage format in `conf/config.toml`:
 
 ```toml
 [monitor.storage]
-# 数据存储格式: "parquet" (推荐) 或 "json"
+# Data storage format: "parquet" (recommended) or "json"
 format = "parquet"
 
-# 压缩算法 (仅用于 parquet): "snappy", "gzip", "brotli", "lz4", "zstd"
+# Compression algorithm (for parquet only): "snappy", "gzip", "brotli", "lz4", "zstd"
 compression = "snappy"
 
-# 是否同时生成传统格式 (向后兼容)
+# Whether to generate legacy formats (backward compatibility)
 generate_legacy_formats = false
 ```
 
-## 生成的文件结构
+## Generated File Structure
 
-监测完成后，在 logs 目录下生成以下文件：
+After monitoring completes, the following files are generated in the logs directory:
 
-```
+```text
 logs/
-└── <项目名称>_<时间戳>/
-    ├── memory_samples.parquet      # 主要监测数据 (Parquet 格式)
-    ├── metadata.json               # 运行元数据
-    ├── analysis_results.json       # 分析结果
-    ├── summary.log                 # 人类可读的摘要
-    └── memory_samples.csv          # 传统格式 (仅在启用时)
+└── <project_name>_<timestamp>/
+    ├── memory_samples.parquet      # Main monitoring data (Parquet format)
+    ├── metadata.json               # Run metadata
+    ├── analysis_results.json       # Analysis results
+    ├── summary.log                 # Human-readable summary
+    └── memory_samples.csv          # Legacy format (only when enabled)
 ```
 
-## 性能对比
+## Performance Comparison
 
-以下是不同格式的性能对比（基于真实监测数据）：
+The following is a performance comparison of different formats (based on real monitoring data):
 
-| 数据类型 | CSV 大小 | Parquet 大小 | 节省空间 | 查询性能提升 |
-|---------|---------|-------------|---------|-------------|
-| 内存样本 (10万行) | 25 MB | 5 MB | 80% | 3-5x |
-| CPU样本 (10万行) | 18 MB | 4 MB | 78% | 3-5x |
-| 进程信息 (1千进程) | 2 MB | 0.4 MB | 80% | 2-3x |
+| Data Type | CSV Size | Parquet Size | Space Savings | Query Performance Gain |
+|-----------|----------|--------------|---------------|------------------------|
+| Memory samples (100k rows) | 25 MB | 5 MB | 80% | 3-5x |
+| CPU samples (100k rows) | 18 MB | 4 MB | 78% | 3-5x |
+| Process info (1k processes) | 2 MB | 0.4 MB | 80% | 2-3x |
 
-## 数据转换
+## Data Conversion
 
-### 使用转换工具
+### Using Conversion Tool
 
-系统提供了内置的转换工具来迁移现有数据：
+The system provides a built-in conversion tool to migrate existing data:
 
 ```bash
-# 转换单个文件
-uv run python -m mymonitor.tools.convert_storage \
+# Convert single file
+uv run python tools/convert_storage.py \
     old_data.csv new_data.parquet \
     --input-format csv --output-format parquet
 
-# 转换整个目录
-uv run python -m mymonitor.tools.convert_storage \
+# Convert entire directory
+uv run python tools/convert_storage.py \
     logs/old_format/ logs/parquet_format/ \
     --input-format csv --output-format parquet --recursive
 
-# 使用不同压缩算法
-uv run python -m mymonitor.tools.convert_storage \
+# Use different compression algorithm
+uv run python tools/convert_storage.py \
     data.csv data.parquet --compression gzip
 ```
 
-### 转换工具选项
+### Conversion Tool Options
 
-- `--input-format`: 输入格式 (csv, json, parquet)
-- `--output-format`: 输出格式 (csv, json, parquet)
-- `--compression`: 压缩算法 (snappy, gzip, brotli, lz4, zstd)
-- `--recursive`: 递归处理子目录
-- `--verbose`: 详细输出
+- `--input-format`: Input format (csv, json, parquet)
+- `--output-format`: Output format (csv, json, parquet)
+- `--compression`: Compression algorithm (snappy, gzip, brotli, lz4, zstd)
+- `--recursive`: Process subdirectories recursively
+- `--verbose`: Verbose output
 
-## 数据访问
+## Data Access
 
-### 使用 Polars (推荐)
+### Using Polars (Recommended)
 
 ```python
 import polars as pl
 
-# 加载完整数据
+# Load complete data
 df = pl.read_parquet("memory_samples.parquet")
 
-# 只加载特定列 (提高性能)
+# Load only specific columns (better performance)
 df = pl.read_parquet("memory_samples.parquet", columns=["timestamp", "pid", "rss_kb"])
 
-# 过滤数据
+# Filter data
 df = pl.read_parquet("memory_samples.parquet").filter(
     pl.col("category") == "compiler"
 )
 ```
 
-### 使用 Pandas
+### Using Pandas
 
 ```python
 import pandas as pd
 
-# 加载数据
+# Load data
 df = pd.read_parquet("memory_samples.parquet")
 
-# 只加载特定列
+# Load only specific columns
 df = pd.read_parquet("memory_samples.parquet", columns=["timestamp", "pid", "rss_kb"])
 ```
 
-### 使用存储管理器
+### Using Storage Manager
 
 ```python
 from mymonitor.storage.data_manager import DataStorageManager
 from pathlib import Path
 
-# 创建存储管理器
+# Create storage manager
 manager = DataStorageManager(Path("logs/project_20230416/"))
 
-# 加载内存样本
+# Load memory samples
 df = manager.load_memory_samples()
 
-# 只加载特定列
+# Load only specific columns
 df = manager.load_memory_samples(columns=["pid", "process_name", "rss_kb"])
 
-# 获取存储信息
+# Get storage information
 info = manager.get_storage_info()
-print(f"存储格式: {info['storage_format']}")
-print(f"文件大小: {info['files']}")
+print(f"Storage format: {info['storage_format']}")
+print(f"File sizes: {info['files']}")
 ```
 
-## 向后兼容性
+## Backward Compatibility
 
-### 启用传统格式
+### Enable Legacy Formats
 
-如果需要同时生成 CSV 格式以保持向后兼容性：
+If you need to generate CSV format simultaneously for backward compatibility:
 
 ```toml
 [monitor.storage]
 format = "parquet"
-generate_legacy_formats = true  # 同时生成 CSV 文件
+generate_legacy_formats = true  # Also generate CSV files
 ```
 
-### 迁移策略
+### Migration Strategies
 
-1. **渐进式迁移**：
-   - 启用 `generate_legacy_formats = true`
-   - 验证 Parquet 数据正确性
-   - 更新分析脚本使用 Parquet
-   - 禁用传统格式生成
+1. **Gradual Migration**:
+   - Enable `generate_legacy_formats = true`
+   - Verify Parquet data correctness
+   - Update analysis scripts to use Parquet
+   - Disable legacy format generation
 
-2. **一次性迁移**：
-   - 使用转换工具转换现有数据
-   - 更新配置使用 Parquet
-   - 更新分析脚本
+2. **One-time Migration**:
+   - Use conversion tool to convert existing data
+   - Update configuration to use Parquet
+   - Update analysis scripts
 
-## 最佳实践
+## Best Practices
 
-1. **使用 Parquet 格式**：获得最佳性能和存储效率
-2. **选择合适的压缩算法**：
-   - 一般用途：`snappy`（默认）
-   - 存储优先：`gzip` 或 `brotli`
-   - 速度优先：`lz4`
-3. **列式查询**：只加载需要的列以提高性能
-4. **批量处理**：对于大型数据集，使用批量读取
-5. **定期清理**：删除不需要的传统格式文件
+1. **Use Parquet Format**: Get optimal performance and storage efficiency
+2. **Choose Appropriate Compression Algorithm**:
+   - General purpose: `snappy` (default)
+   - Storage priority: `gzip` or `brotli`
+   - Speed priority: `lz4`
+3. **Column-wise Queries**: Load only needed columns for better performance
+4. **Batch Processing**: Use batch reading for large datasets
+5. **Regular Cleanup**: Delete unnecessary legacy format files
 
-## 故障排除
+## Troubleshooting
 
-### 常见问题
+### Common Issues
 
-**Q: Parquet 文件无法打开**
-A: 确保安装了 `polars-lts-cpu[pandas, pyarrow]` 依赖
+**Q: Cannot open Parquet files**
+A: Ensure `polars-lts-cpu[pandas, pyarrow]` dependencies are installed
 
-**Q: 转换后数据不匹配**
-A: 检查数据类型和编码，某些特殊字符可能需要处理
+**Q: Data doesn't match after conversion**
+A: Check data types and encoding, some special characters may need handling
 
-**Q: Parquet 文件比 CSV 大**
-A: 对于小文件这是正常的，Parquet 包含元数据。大文件会显著更小。
+**Q: Parquet files larger than CSV**
+A: This is normal for small files, Parquet contains metadata. Large files will be significantly smaller.
 
-**Q: 无法读取旧的 CSV 文件**
-A: 使用转换工具迁移到 Parquet 格式
+**Q: Cannot read old CSV files**
+A: Use conversion tool to migrate to Parquet format
 
-### 性能调优
+### Performance Tuning
 
-1. **列裁剪**：只读取需要的列
-2. **谓词下推**：在读取时应用过滤条件
-3. **批量处理**：处理大型数据集时使用分块读取
-4. **合适的压缩**：根据使用场景选择压缩算法
+1. **Column Pruning**: Read only needed columns
+2. **Predicate Pushdown**: Apply filter conditions during reading
+3. **Batch Processing**: Use chunked reading for large datasets
+4. **Appropriate Compression**: Choose compression algorithm based on use case
 
-## 技术细节
+## Technical Details
 
-### 数据模式
+### Data Schema
 
-Parquet 文件保留以下数据模式：
+Parquet files preserve the following data schema:
 
-```
+```text
 memory_samples.parquet:
 ├── timestamp: TIMESTAMP
 ├── pid: INT64
@@ -224,14 +226,14 @@ memory_samples.parquet:
 └── category: STRING
 ```
 
-### 压缩效果
+### Compression Performance
 
-不同压缩算法的特性：
+Characteristics of different compression algorithms:
 
-| 算法 | 压缩率 | 压缩速度 | 解压速度 | 适用场景 |
-|------|--------|----------|----------|----------|
-| snappy | 中等 | 快 | 快 | 通用，默认选择 |
-| gzip | 高 | 慢 | 中等 | 存储优先 |
-| brotli | 很高 | 慢 | 中等 | 长期存储 |
-| lz4 | 低 | 很快 | 很快 | 实时处理 |
-| zstd | 高 | 快 | 快 | 现代应用 |
+| Algorithm | Compression Ratio | Compression Speed | Decompression Speed | Use Case |
+|-----------|------------------|-------------------|---------------------|----------|
+| snappy | Medium | Fast | Fast | General purpose, default choice |
+| gzip | High | Slow | Medium | Storage priority |
+| brotli | Very High | Slow | Medium | Long-term storage |
+| lz4 | Low | Very Fast | Very Fast | Real-time processing |
+| zstd | High | Fast | Fast | Modern applications |

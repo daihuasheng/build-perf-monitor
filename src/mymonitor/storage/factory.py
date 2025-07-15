@@ -1,5 +1,16 @@
 """
-Factory for creating storage instances.
+Factory module for creating storage backend instances.
+
+This module provides a factory function for creating appropriate storage
+backend instances based on the requested format type and compression settings.
+It abstracts the instantiation details and provides a unified interface for
+obtaining storage implementations.
+
+The factory pattern allows for:
+- Runtime selection of storage backends
+- Centralized configuration of storage options
+- Easy extension with new storage backends in the future
+- Consistent error handling for unsupported formats
 """
 
 import logging

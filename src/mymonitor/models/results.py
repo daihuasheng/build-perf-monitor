@@ -1,8 +1,17 @@
 """
-Monitoring results data models.
+Monitoring results data models and aggregation structures.
 
-This module contains data structures for storing and organizing
-monitoring results and collected memory data.
+This module defines the data structures used to store and organize the complete
+results of a monitoring session. It provides a comprehensive container for all
+collected data, statistics, and analysis results that can be easily serialized
+and stored using the storage system.
+
+The models are designed to support:
+- Raw sample data for detailed analysis
+- Aggregated statistics by process categories
+- Peak memory usage tracking and timestamps
+- Process identification and categorization
+- Efficient serialization to storage formats
 """
 
 from dataclasses import dataclass
@@ -12,7 +21,21 @@ from typing import Any, Dict, List, Set
 @dataclass
 class MonitoringResults:
     """
-    Holds all the aggregated results from a completed monitoring loop.
+    Comprehensive container for all monitoring results and analysis data.
+
+    This class serves as the central data structure for storing all collected
+    memory samples, statistical analysis, and categorized results from a complete
+    monitoring session. It provides a structured way to organize and access
+    the monitoring data for storage, reporting, and visualization.
+
+    The data is organized into several key components:
+    - Raw sample data for all monitored processes
+    - Category-based statistics and aggregations
+    - Peak memory usage tracking across the entire monitoring session
+    - Process categorization and identification
+
+    This structure is designed to be easily serializable to the storage system
+    and provides all necessary data for generating reports and visualizations.
     """
 
     # A list of dictionaries, where each dict is a raw data row for the Parquet file.
