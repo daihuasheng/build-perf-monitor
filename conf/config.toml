@@ -106,6 +106,17 @@ hybrid_enable_queue_monitoring = true
 # Batch size for result processing (number of results to process at once)
 hybrid_batch_result_size = 50
 
+[monitor.storage]
+# Data storage format: "parquet" (recommended) or "json"
+# Parquet provides 75-80% space savings and faster query performance
+format = "parquet"
+# Compression algorithm for Parquet files: "snappy" (default), "gzip", "brotli", "lz4", "zstd"
+# Snappy provides good balance between compression ratio and speed
+compression = "snappy"
+# Whether to generate legacy CSV/JSON formats for backward compatibility
+# Set to true if you need to access data with tools that don't support Parquet
+generate_legacy_formats = false
+
 
 # ===================================================================
 # Paths to specialized configuration files

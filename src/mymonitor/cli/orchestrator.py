@@ -16,6 +16,7 @@ from ..models.config import ProjectConfig
 from ..models.runtime import RunContext, RunPaths
 from ..monitoring.architectures import HybridArchitecture
 from ..executor.build_process import BuildProcessManager
+from ..storage.data_manager import DataStorageManager
 from ..system.cpu_manager import get_cpu_manager
 from ..executor.thread_pool import (
     initialize_global_thread_pools,
@@ -275,131 +276,14 @@ class BuildRunner:
         )
 
     async def _save_results(self, results) -> None:
-        """Save monitoring results to files."""
+        """Save monitoring results to files using the new storage system."""
         try:
-            logger.info("Saving monitoring results...")
+            # Create data storage manager
+            output_dir = self.run_context.paths.output_parquet_file.parent
+            storage_manager = DataStorageManager(output_dir)
 
-            if not results or not results.all_samples_data:
-                logger.warning("No monitoring data to save")
-                return
-
-            # Import pandas for data saving
-            try:
-                import pandas as pd
-            except ImportError:
-                logger.error("pandas is required for saving results but not installed")
-                return
-
-            # Convert samples to DataFrame
-            df = pd.DataFrame(results.all_samples_data)
-
-            # Save Parquet file
-            parquet_path = self.run_context.paths.output_parquet_file
-            parquet_path.parent.mkdir(parents=True, exist_ok=True)
-            df.to_parquet(parquet_path, index=False)
-            logger.info(f"Saved monitoring data to: {parquet_path}")
-
-            # Save metadata log
-            metadata_path = (
-                self.run_context.paths.output_parquet_file.parent / "metadata.log"
-            )
-            with open(metadata_path, "w") as f:
-                f.write(f"project_name: {self.run_context.project_name}\n")
-                f.write(f"project_dir: {self.run_context.project_dir}\n")
-                f.write(f"process_pattern: {self.run_context.process_pattern}\n")
-                f.write(
-                    f"actual_build_command: {self.run_context.actual_build_command}\n"
-                )
-                f.write(f"parallelism_level: {self.run_context.parallelism_level}\n")
-                f.write(
-                    f"monitoring_interval: {self.run_context.monitoring_interval}\n"
-                )
-                f.write(f"collector_type: {self.run_context.collector_type}\n")
-                f.write(
-                    f"current_timestamp_str: {self.run_context.current_timestamp_str}\n"
-                )
-                f.write(f"taskset_available: {self.run_context.taskset_available}\n")
-                f.write(
-                    f"build_cores_target_str: {self.run_context.build_cores_target_str}\n"
-                )
-                f.write(
-                    f"monitor_script_pinned_to_core_info: {self.run_context.monitor_script_pinned_to_core_info}\n"
-                )
-                f.write(f"monitor_core_id: {self.run_context.monitor_core_id}\n")
-
-                # Get build process PID from build runner
-                build_pid = getattr(self.build_runner, "_process_pid", "unknown")
-                f.write(f"build_process_pid: {build_pid}\n")
-
-                # Calculate and write build duration
-                build_duration = getattr(self.build_runner, "_duration_seconds", 0.0)
-                f.write(f"build_duration_seconds: {build_duration:.2f}\n")
-
-            # Generate summary log in the expected format
-            summary_path = self.run_context.paths.output_summary_log_file
-            with open(summary_path, "w") as f:
-                f.write("Build Monitoring Summary\n")
-                f.write("=======================\n\n")
-                f.write(f"Project: {self.run_context.project_name}\n")
-                f.write(f"Parallelism: -j{self.run_context.parallelism_level}\n")
-
-                # Calculate build duration
-                build_duration = getattr(self.build_runner, "_duration_seconds", 0.0)
-                f.write(
-                    f"Total Build & Monitoring Duration: {build_duration:.1f}s ({build_duration:.2f} seconds)\n"
-                )
-
-                # Format peak memory in GB
-                peak_memory_gb = results.peak_overall_memory_kb / 1024 / 1024
-                f.write(f"Peak Overall Memory (PSS_KB): {peak_memory_gb:.2f} GB\n")
-
-                f.write(f"Samples Collected: {len(results.all_samples_data)}\n")
-
-                # Get build exit code from build runner
-                exit_code = getattr(self.build_runner, "_return_code", 0)
-                f.write(f"Build Exit Code: {exit_code}\n\n")
-
-                # Write category statistics in the expected format
-                if results.category_stats:
-                    f.write("--- Category Peak Memory Usage ---\n")
-
-                    # Group by major category
-                    major_categories = {}
-                    for category, stats in results.category_stats.items():
-                        if ":" in category:
-                            major_cat, minor_cat = category.split(":", 1)
-                            if major_cat not in major_categories:
-                                major_categories[major_cat] = {}
-                            major_categories[major_cat][minor_cat] = stats
-
-                    for major_cat, minor_cats in major_categories.items():
-                        # Calculate total peak memory for this major category
-                        total_peak_kb = sum(
-                            stats["peak_sum_kb"] for stats in minor_cats.values()
-                        )
-                        total_pids = sum(
-                            stats["process_count"] for stats in minor_cats.values()
-                        )
-
-                        f.write(f"{major_cat}:\n")
-                        f.write(
-                            f"  Total Peak Memory: {total_peak_kb} KB ({total_pids} total pids)\n"
-                        )
-
-                        # Write minor categories
-                        for minor_cat, stats in minor_cats.items():
-                            peak_kb = stats["peak_sum_kb"]
-                            process_count = stats["process_count"]
-                            single_peak_kb = int(
-                                stats["average_peak_kb"]
-                            )  # Use average as single process peak
-                            f.write(
-                                f"    {minor_cat}: {peak_kb} KB (total, {process_count} pids), single process peak: {single_peak_kb} KB\n"
-                            )
-
-                        f.write("\n")
-
-            logger.info(f"Saved summary log to: {summary_path}")
+            # Save all results using the storage manager
+            storage_manager.save_monitoring_results(results, self.run_context)
 
         except Exception as e:
             logger.error(f"Error saving results: {e}", exc_info=True)

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from ..models.config import MonitorConfig, ProjectConfig, RuleConfig
+from .storage_config import StorageConfig
 from ..validation import (
     ValidationError,
     validate_positive_integer,
@@ -231,6 +232,10 @@ def validate_monitor_config(monitor_data: Dict[str, Any]) -> MonitorConfig:
             field_name="monitor.hybrid.hybrid_batch_result_size",
         )
 
+        # Validate storage settings
+        storage_settings = monitor_data.get("storage", {})
+        storage_config = StorageConfig.from_dict(storage_settings)
+
         return MonitorConfig(
             # from [monitor.collection]
             interval_seconds=interval_seconds,
@@ -265,6 +270,8 @@ def validate_monitor_config(monitor_data: Dict[str, Any]) -> MonitorConfig:
             hybrid_worker_timeout=hybrid_worker_timeout,
             hybrid_enable_queue_monitoring=hybrid_enable_queue_monitoring,
             hybrid_batch_result_size=hybrid_batch_result_size,
+            # from [monitor.storage]
+            storage=storage_config,
         )
 
     except ValidationError as e:

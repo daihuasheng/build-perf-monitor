@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Union
 
+from ..config.storage_config import StorageConfig
+
 
 @dataclass
 class MonitorConfig:
@@ -50,6 +52,9 @@ class MonitorConfig:
     hybrid_worker_timeout: float = 5.0  # Worker操作超时时间（秒）
     hybrid_enable_queue_monitoring: bool = True  # 启用队列监控
     hybrid_batch_result_size: int = 50  # 结果批处理大小
+
+    # [monitor.storage] - 存储配置（有默认值）
+    storage: StorageConfig = None  # 存储配置，将在验证时设置默认值
 
 
 @dataclass
