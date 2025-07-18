@@ -5,7 +5,7 @@ This module contains all configuration-related data structures for projects,
 monitoring settings, categorization rules, and application configuration.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Union
 
@@ -100,6 +100,8 @@ class RuleConfig:
     pattern: Optional[str] = None
     # Optional comment describing the rule.
     comment: str = ""
+    # Optional examples showing typical command patterns that match this rule.
+    examples: List[str] = field(default_factory=list)
 
     def __post_init__(self):
         """Post-initialization processing to handle pattern/patterns compatibility."""

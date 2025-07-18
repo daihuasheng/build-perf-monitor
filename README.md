@@ -195,8 +195,24 @@ MyMonitor automatically generates interactive plots using Plotly:
 - **Dual-axis visualization**: Memory (bars) and duration (line) on the same chart
 
 ### Detailed Plots
-- **Time-series line plots**: Memory usage trends over time by category
-- **Stacked area plots**: Total memory composition by process category
+
+#### 🎯 Interactive Categorization Switching (Default)
+
+**Time-series line plots** and **stacked area plots** now support dynamic categorization switching, allowing users to switch between different classification views within the same HTML file:
+
+- **📊 Major Categories** (default): Shows main classifications (e.g., `CPP_COMPILE`, `CPP_LINK`, `Other`)
+- **🔍 Detailed Subcategories**: Expands to show all subcategory details (e.g., `Frontend_GCC`, `Full_GCC`, `Executable_Link`)
+- **📋 Expanded Other**: Keeps major categories unchanged but expands `Other` category into specific subcategories
+
+**Advantages**:
+- 🖱️ Users can switch views in real-time by clicking buttons in the browser
+- 📈 Single chart file contains multiple levels of detail
+- 🎨 Consistent colors across different views for easy comparison
+- 💾 Reduces file count and improves user experience
+
+**Generated Files**:
+- `project_j8_PSS_KB_interactive_lines_plot.html` - Interactive time-series line plot
+- `project_j8_PSS_KB_interactive_stacked_plot.html` - Interactive stacked area plot
 - **Interactive features**: Zoom, pan, hover details, category filtering
 
 ### Plot Generation
@@ -216,6 +232,13 @@ python tools/plotter.py --log-dir logs/run_20250703_143052 --jobs 8
 # Filter by category or top-N
 python tools/plotter.py --log-dir logs/run_20250703_143052 --category CPP_Compile
 python tools/plotter.py --log-dir logs/run_20250703_143052 --top-n 5
+
+# Categorization display options (legacy mode - generates single-view charts)
+python tools/plotter.py --log-dir logs/run_20250703_143052 --expand-subcategories  # Show all subcategories
+python tools/plotter.py --log-dir logs/run_20250703_143052 --expand-other          # Expand only 'Other' category
+
+# Default mode: Generate interactive charts with dynamic view switching
+python tools/plotter.py --log-dir logs/run_20250703_143052                         # Interactive charts
 ```
 
 ### Storage Format Conversion

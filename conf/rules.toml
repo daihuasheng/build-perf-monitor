@@ -129,10 +129,10 @@ comment = "Ignore any Cursor-related processes (case-insensitive)."
 [[rules]]
 major_category = "BuildSystem"
 category = "BazelServer"
-priority = 200
+priority = 205
 match_field = "current_cmd_full"
 match_type = "regex"
-pattern = 'java.*Bazel.*(A-server\.jar|server\.jar)'
+pattern = 'java.*Bazel.*server\.jar'
 comment = "Matches Bazel server Java processes."
 
 [[rules]]
@@ -147,7 +147,7 @@ comment = "Matches Gradle Java processes."
 [[rules]]
 major_category = "BuildSystem"
 category = "Ninja"
-priority = 190
+priority = 228
 match_field = "current_cmd_name"
 match_type = "exact"
 pattern = "ninja"
@@ -156,7 +156,7 @@ comment = "Ninja build system."
 [[rules]]
 major_category = "BuildSystem"
 category = "Make"
-priority = 185
+priority = 186
 match_field = "current_cmd_name"
 match_type = "in_list"
 patterns = ["make", "gmake"]
@@ -183,7 +183,7 @@ comment = "Kati or ckati (Soong's make)."
 [[rules]]
 major_category = "BuildSystem"
 category = "SoongUI"
-priority = 175
+priority = 177
 match_field = "current_cmd_name"
 match_type = "in_list"
 patterns = ["soong_ui", "soong_ui.bash"]
@@ -192,7 +192,7 @@ comment = "Soong UI."
 [[rules]]
 major_category = "BuildSystem"
 category = "SoongBuild"
-priority = 170
+priority = 227
 match_field = "current_cmd_name"
 match_type = "exact"
 pattern = "soong_build"
@@ -201,7 +201,7 @@ comment = "Soong build process itself."
 [[rules]]
 major_category = "BuildSystem"
 category = "BazelClient"
-priority = 165
+priority = 167
 match_field = "current_cmd_name"
 match_type = "exact"
 pattern = "bazel"
@@ -210,7 +210,7 @@ comment = "Bazel client."
 [[rules]]
 major_category = "Java_Compile"
 category = "SoongJavacWrapper"
-priority = 163
+priority = 164
 match_field = "current_cmd_name"
 match_type = "regex"
 pattern = "(?:^|/)soong_javac_wrapper$"
@@ -226,31 +226,38 @@ pattern = "(?:^|/)javac$"
 comment = "The Java compiler, matching its name or full path."
 
 [[rules]]
-major_category = "CPP_Compile"
-category = "ClangInternalCompiler"
-priority = 161
+major_category = "CPP_COMPILE"
+category = "Frontend_GCC"
+priority = 230
+match_field = "current_cmd_name"
+match_type = "in_list"
+patterns = ["cc1", "cc1plus"]
+comment = "GCC internal frontend - parsing, template instantiation, semantic analysis"
+examples = [
+    "cc1 -quiet -v -imultiarch x86_64-linux-gnu -iprefix /usr/lib/gcc/x86_64-linux-gnu/9/ -isystem /usr/lib/gcc/x86_64-linux-gnu/9/include -D_GNU_SOURCE main.c",
+    "cc1plus -quiet -v -imultiarch x86_64-linux-gnu -D_GNU_SOURCE -fPIC -mtune=generic -march=x86-64 -auxbase-strip main.o -g -O2 -version -o /tmp/ccXXXXXX.s main.cpp",
+]
+
+[[rules]]
+major_category = "CPP_COMPILE"
+category = "Frontend_Clang"
+priority = 210
 match_field = "current_cmd_full"
 match_type = "contains"
 pattern = " -cc1 "
-comment = "Clang running in internal compiler/worker mode. This is a pure compilation task."
+comment = "Clang internal frontend - parsing, template instantiation, semantic analysis"
+examples = [
+    "clang -cc1 -triple x86_64-unknown-linux-gnu -emit-obj -mrelax-all -disable-free -main-file-name main.cpp -mrelocation-model static -mthread-model posix -fmath-errno -masm-verbose -mconstructor-aliases -munwind-tables -target-cpu x86-64 -dwarf-column-info -debugger-tuning=gdb -resource-dir /usr/lib/clang/10.0.0 -internal-isystem /usr/lib/gcc/x86_64-linux-gnu/9/../../../../include/c++/9 -O2 -fdebug-compilation-dir /home/user/project -ferror-limit 19 -fmessage-length 0 -fobjc-runtime=gcc -fcxx-exceptions -fexceptions -fdiagnostics-show-option -fcolor-diagnostics -o main.o -x c++ main.cpp",
+]
 
 [[rules]]
 major_category = "BuildSystem"
 category = "Gomacc"
-priority = 160
+priority = 163
 match_field = "current_cmd_name"
 match_type = "exact"
 pattern = "gomacc"
 comment = "Goma C/C++ compiler."
-
-[[rules]]
-major_category = "CPP_Compile"
-category = "GCCInternalCompiler"
-priority = 160
-match_field = "current_cmd_name"
-match_type = "in_list"
-patterns = ["cc1", "cc1plus"]
-comment = "Actual GCC C/C++ compiler internals. This is a pure compilation task."
 
 [[rules]]
 major_category = "Go_Compile"
@@ -273,7 +280,7 @@ comment = "Go internal linker."
 [[rules]]
 major_category = "BuildSystem"
 category = "SoongSandbox"
-priority = 158
+priority = 157
 match_field = "current_cmd_name"
 match_type = "regex"
 pattern = "(?:^|/)sbox$"
@@ -289,96 +296,257 @@ pattern = "siso"
 comment = "Siso build system (Chromium)."
 
 [[rules]]
-major_category = "CPP_Link"
-category = "DirectLinker"
-priority = 155
-match_field = "current_cmd_name"
-match_type = "in_list"
-patterns = ["ld", "collect2", "lld", "ld.lld"]
-comment = "Direct C/C++ linker/collector calls."
+major_category = "CPP_COMPILE"
+category = "Full_Clang"
+priority = 190
+match_field = "current_cmd_full"
+match_type = "regex"
+pattern = '^(?:.*/)?(?:clang|clang\+\+|[^/]*-clang(?:\+\+)?)(?=\s)(?!.*\s+-E(?:\s|$))(?!.*\s+-S(?:\s|$)).*\s+-c(?:\s|$)'
+comment = "Clang full compilation - complete source to object file in single process"
+examples = [
+    "clang++ -c -O2 -std=c++17 -Wall -Wextra -fPIC -I./include -DNDEBUG src/module.cpp -o build/module.o",
+    "clang -c -O3 -march=native -flto -ffunction-sections -fdata-sections main.c -o main.o",
+    "/usr/bin/clang++ -c -g -O0 -std=c++14 -fno-rtti -fno-exceptions -I/usr/include/qt5 widget.cpp -o widget.o",
+]
 
 [[rules]]
-major_category = "CPP_Assemble"
-category = "DirectAssembler"
-priority = 150
+major_category = "CPP_COMPILE"
+category = "Full_GCC"
+priority = 185
+match_field = "current_cmd_full"
+match_type = "regex"
+pattern = '^(?:.*/)?(?:gcc|g\+\+)(?=\s)(?!.*\s+-E(?:\s|$))(?!.*\s+-S(?:\s|$)).*\s+-c(?:\s|$)'
+comment = "GCC full compilation driver - coordinates frontend and backend processes"
+examples = [
+    "gcc -c -O2 -Wall -Wextra -std=c99 -fPIC -I./include -DVERSION=\\\"1.0\\\" src/utils.c -o build/utils.o",
+    "g++ -c -O3 -std=c++17 -march=native -mtune=native -flto -fno-rtti -I./src -I./third_party/include main.cpp -o main.o",
+    "/usr/bin/g++-9 -c -g -O0 -std=c++11 -fstack-protector-strong -D_FORTIFY_SOURCE=2 test.cpp -o test.o",
+]
+
+# 版本号编译器 (gcc-9, g++-11, clang-12 等)
+[[rules]]
+major_category = "CPP_COMPILE"
+category = "Full_Versioned"
+priority = 188
+match_field = "current_cmd_full"
+match_type = "regex"
+pattern = '^(?:.*/)?(?:gcc|g\+\+|clang|clang\+\+)-\d+(?:\.\d+)*(?=\s)(?!.*\s+-E(?:\s|$))(?!.*\s+-S(?:\s|$)).*\s+-c(?:\s|$)'
+comment = "Versioned compiler full compilation (gcc-9, clang-12, etc.)"
+examples = [
+    "g++-9 -c -std=c++17 main.cpp -o main.o",
+    "clang-12 -c -O3 main.c -o main.o",
+    "gcc-11 -c -g debug.c -o debug.o",
+]
+
+[[rules]]
+major_category = "CPP_COMPILE"
+category = "Full_Cross"
+priority = 187
+match_field = "current_cmd_full"
+match_type = "regex"
+pattern = '^(?:.*/)?[^/]*-(?:linux-)?(?:gnu|mingw32|mingw64|elf|eabi)[^/]*-g(?:cc|\+\+)(?=\s)(?!.*\s+-E(?:\s|$))(?!.*\s+-S(?:\s|$)).*\s+-c(?:\s|$)'
+comment = "Cross-compiler full compilation - complete compilation for target architecture"
+examples = [
+    "arm-linux-gnueabihf-gcc -c -O2 -march=armv7-a -mfpu=neon -mfloat-abi=hard -I./include embedded.c -o embedded.o",
+    "aarch64-linux-gnu-g++ -c -O3 -mcpu=cortex-a72 -std=c++14 -fPIC driver.cpp -o driver.o",
+    "x86_64-w64-mingw32-gcc -c -O2 -I./win32/include -DWIN32 -D_WIN32_WINNT=0x0601 windows_port.c -o windows_port.o",
+]
+
+[[rules]]
+major_category = "CPP_COMPILE"
+category = "Full_Specialized"
+priority = 176
+match_field = "current_cmd_full"
+match_type = "regex"
+pattern = '^(?:.*/)?(?:nvcc|icpc|icc|pgcc|xlc|xlC)(?=\s).*\s+-c(?:\s|$)'
+comment = "Specialized compiler full compilation - CUDA, Intel, PGI, IBM compilers"
+examples = [
+    "nvcc -c -O3 -arch=sm_75 -std=c++14 -I./cuda_include --expt-relaxed-constexpr kernel.cu -o kernel.o",
+    "icpc -c -O3 -xHost -ipo -std=c++17 -I./intel_include optimized.cpp -o optimized.o",
+    "pgcc -c -O4 -acc -ta=tesla:cc70 -Minfo=accel parallel_code.c -o parallel_code.o",
+]
+
+# 独立的 cpp 预处理器
+[[rules]]
+major_category = "CPP_COMPILE"
+category = "Preprocess_CPP"
+priority = 172
+match_field = "current_cmd_name"
+match_type = "regex"
+pattern = '^(?:.*/)?cpp$'
+comment = "Standalone C preprocessor (cpp command)"
+examples = ["cpp -I./include main.c", "/usr/bin/cpp -DDEBUG source.c"]
+
+[[rules]]
+major_category = "CPP_COMPILE"
+category = "Preprocess_Any"
+priority = 170
+match_field = "current_cmd_full"
+match_type = "regex"
+pattern = '^(?:.*/)?(?:cpp|gcc|g\+\+|clang|clang\+\+|[^/]*-(?:linux-)?gnu[^/]*-g(?:cc|\+\+)|[^/]*-clang(?:\+\+)?)(?:\s+.*?)?\s+-E(?:\s|$)'
+comment = "Preprocessing stage - header expansion and macro processing"
+examples = [
+    "gcc -E -I./include -I/usr/include -DDEBUG=1 -DVERSION=\\\"2.0\\\" main.c",
+    "clang++ -E -std=c++17 -I./src -I./third_party -DUSE_FEATURE_X template_heavy.cpp",
+    "cpp -I./include -D_GNU_SOURCE -DPLATFORM_LINUX source.c",
+]
+
+[[rules]]
+major_category = "CPP_COMPILE"
+category = "Backend_Any"
+priority = 166
+match_field = "current_cmd_full"
+match_type = "regex"
+pattern = '^(?:.*/)?(?:gcc|g\+\+|clang|clang\+\+|[^/]*-(?:linux-)?gnu[^/]*-g(?:cc|\+\+)|[^/]*-clang(?:\+\+)?)(?:\s+.*?)?\s+-S(?:\s|$)'
+comment = "Backend code generation - optimization and assembly generation"
+examples = [
+    "gcc -S -O3 -march=native -mtune=native -fomit-frame-pointer math_intensive.c -o math_intensive.s",
+    "clang++ -S -O2 -std=c++17 -fvectorize -fslp-vectorize algorithm.cpp -o algorithm.s",
+    "g++ -S -Og -g -fno-omit-frame-pointer debug_version.cpp -o debug_version.s",
+]
+
+[[rules]]
+major_category = "CPP_COMPILE"
+category = "Assembly_Any"
+priority = 161
+match_field = "current_cmd_name"
+match_type = "regex"
+pattern = "^(?:.*/)?(?:as|gas|[^/]*-(?:linux-)?gnu[^/]*-as)$"
+comment = "Assembly stage - convert assembly code to object files"
+examples = [
+    "as --64 -o main.o main.s",
+    "gas --32 --march=i686 -o legacy.o legacy.s",
+    "arm-linux-gnueabihf-as -march=armv7-a -mfpu=neon -o embedded.o embedded.s",
+]
+
+# 交叉编译器和专用编译器的通用回退
+[[rules]]
+major_category = "CPP_COMPILE"
+category = "Full_CrossGeneric"
+priority = 51
+match_field = "current_cmd_name"
+match_type = "regex"
+pattern = "^(?:.*/)?[^/]*-(?:linux-)?(?:gnu|mingw32|mingw64|elf|eabi)[^/]*-g(?:cc|\\+\\+)$"
+comment = "Cross-compiler fallback - unspecified cross-compilation operation"
+examples = [
+    "arm-linux-gnueabihf-gcc",
+    "x86_64-w64-mingw32-g++",
+    "aarch64-linux-gnu-gcc",
+]
+
+[[rules]]
+major_category = "CPP_COMPILE"
+category = "Full_Generic"
+priority = 50
+match_field = "current_cmd_name"
+match_type = "regex"
+pattern = "^(?:.*/)?(?:gcc|g\\+\\+|clang|clang\\+\\+|cc|c\\+\\+)$"
+comment = "Generic compiler driver fallback - unspecified compilation operation"
+examples = ["gcc", "clang++", "arm-linux-gnueabihf-g++", "/usr/local/bin/clang"]
+
+# ===================================================================
+# CPP_LINK - C/C++ 链接相关进程
+# 命名格式: {链接类型}_{工具类型} 或 {特殊操作}_{工具类型}
+# ===================================================================
+
+# LTO 链接 - 特殊的高内存消耗操作
+[[rules]]
+major_category = "CPP_LINK"
+category = "LTO_Optimizer"
+priority = 229
+match_field = "current_cmd_name"
+match_type = "in_list"
+patterns = ["lto-wrapper", "lto1"]
+comment = "Link-time optimization processes - highest memory usage in linking"
+examples = [
+    "lto-wrapper --plugin-opt=-fresolution=/tmp/ccXXXXXX.res --plugin-opt=-pass-through=-lgcc --plugin-opt=-pass-through=-lgcc_s --plugin-opt=-pass-through=-lc --plugin-opt=-pass-through=-lgcc --plugin-opt=-pass-through=-lgcc_s --plugin-opt=O2 --plugin-opt=mcpu=native /usr/lib/gcc/x86_64-linux-gnu/9/collect2",
+    "lto1 -fltrans-output-list=/tmp/ccXXXXXX.ltrans.out -fltrans -dumpbase main -dumpdir ./ -auxbase main -O2 -version -fcompare-debug-second /tmp/ccXXXXXX.ltrans0.ltrans.o",
+]
+
+[[rules]]
+major_category = "CPP_LINK"
+category = "LTO_Collector"
+priority = 208
+match_field = "current_cmd_full"
+match_type = "regex"
+pattern = 'collect2.*--plugin.*lto'
+comment = "LTO-enabled collector process - part of link-time optimization"
+examples = [
+    "collect2 --plugin /usr/lib/gcc/x86_64-linux-gnu/9/liblto_plugin.so --plugin-opt=/usr/lib/gcc/x86_64-linux-gnu/9/lto-wrapper --plugin-opt=-fresolution=/tmp/ccXXXXXX.res --plugin-opt=-pass-through=-lgcc --eh-frame-hdr -m elf_x86_64 --hash-style=gnu --as-needed -dynamic-linker /lib64/ld-linux-x86-64.so.2 -pie /usr/lib/gcc/x86_64-linux-gnu/9/../../../x86_64-linux-gnu/Scrt1.o main.o -lstdc++ -lm -lgcc_s -lgcc -lc -lgcc_s -lgcc",
+]
+
+# 可执行文件链接
+[[rules]]
+major_category = "CPP_LINK"
+category = "Executable_Driver"
+priority = 200
+match_field = "current_cmd_full"
+match_type = "regex"
+pattern = '^(?:.*/)?(?:gcc|g\+\+|clang|clang\+\+)\s+(?!.*-c\s)(?!.*-S\s)(?!.*-E\s)(?!.*-shared\s).*-o\s'
+comment = "Executable linking via compiler driver - memory scales with object count"
+examples = [
+    "gcc -o myapp main.o utils.o math.o -L./lib -lmylib -lm -lpthread",
+    "clang++ -o server main.o network.o database.o -std=c++17 -O2 -L/usr/local/lib -lboost_system -lboost_thread -lpq",
+    "g++ -o game_engine core.o graphics.o audio.o input.o -L./third_party/lib -lSDL2 -lSDL2_image -lSDL2_mixer -lGL -lGLEW -lpthread",
+]
+
+# 共享库链接
+[[rules]]
+major_category = "CPP_LINK"
+category = "SharedLib_Driver"
+priority = 175
+match_field = "current_cmd_full"
+match_type = "regex"
+pattern = '^(?:.*/)?(?:gcc|g\+\+|clang|clang\+\+|[^/]*-(?:linux-)?gnu[^/]*-g(?:cc|\+\+)|[^/]*-clang(?:\+\+)?)(?:\s+.*?)?\s+-shared(?:\s|$)'
+comment = "Shared library linking via compiler driver - higher memory than executable"
+examples = [
+    "gcc -shared -fPIC -o libutils.so.1.0 utils.o string_ops.o file_ops.o -lc",
+    "clang++ -shared -fPIC -Wl,-soname,libmylib.so.1 -o libmylib.so.1.2.3 obj1.o obj2.o obj3.o -lstdc++ -lm",
+    "g++ -shared -fPIC -O2 -o libgraphics.so graphics.o renderer.o shader.o -lGL -lGLEW",
+]
+
+# 静态库创建
+[[rules]]
+major_category = "CPP_LINK"
+category = "StaticLib_Archiver"
+priority = 25
+match_field = "current_cmd_full"
+match_type = "regex"
+pattern = '^(?:.*/)?(?:ar|llvm-ar|[^/]*-(?:linux-)?gnu[^/]*-ar)(?:\s+.*?)?\s+(?:rcs|cr|cru)(?:\s|$)'
+comment = "Static library archiving - relatively low memory usage"
+examples = [
+    "ar rcs libutils.a utils.o string_ops.o file_ops.o math_ops.o",
+    "llvm-ar rcs libcore.a core.o memory.o threading.o logging.o",
+    "arm-linux-gnueabihf-ar cr libembedded.a sensor.o actuator.o protocol.o",
+]
+
+# 直接链接器调用
+[[rules]]
+major_category = "CPP_LINK"
+category = "Direct_Linker"
+priority = 165
+match_field = "current_cmd_name"
+match_type = "regex"
+pattern = "^(?:.*/)?(?:ld|ld\\.lld|ld\\.gold|ld\\.bfd|[^/]*-(?:linux-)?gnu[^/]*-ld)$"
+comment = "Direct linker invocation - memory varies with optimization level"
+examples = [
+    "ld -dynamic-linker /lib64/ld-linux-x86-64.so.2 -o myapp /usr/lib/x86_64-linux-gnu/crt1.o main.o -lc",
+    "ld.lld --hash-style=gnu --eh-frame-hdr -m elf_x86_64 -dynamic-linker /lib64/ld-linux-x86-64.so.2 -o server main.o network.o -lc -lgcc_s",
+    "ld.gold --threads --thread-count=4 -o optimized_app main.o lib1.o lib2.o -lc -lstdc++",
+]
+
+# 普通收集器
+[[rules]]
+major_category = "CPP_LINK"
+category = "Standard_Collector"
+priority = 160
 match_field = "current_cmd_name"
 match_type = "exact"
-pattern = "as"
-comment = "C/C++ Assembler."
-
-# Priority 100-149 (Medium - Specific Actions)
-[[rules]]
-major_category = "CPP_Preprocess"
-category = "Driver_Preprocessing"
-priority = 140
-match_field = "current_cmd_full"
-match_type = "regex"
-pattern = '^(?:.*/)?(?:clang\+\+|g\+\+|clang|gcc|cc)(?=\s|$).*?\s-E(\s|$)'
-comment = "A driver performing preprocessing only (-E flag)."
-
-[[rules]]
-major_category = "CPP_Assemble"
-category = "Driver_SourceToAsm"
-priority = 135
-match_field = "current_cmd_full"
-match_type = "regex"
-pattern = '^(?:.*/)?(?:clang\+\+|g\+\+|clang|gcc|cc)(?=\s|$).*?\s-S(\s|$)'
-comment = "A driver compiling source to assembly (-S flag)."
-
-[[rules]]
-major_category = "CPP_Compile"
-category = "Driver_Compile"
-priority = 125
-match_field = "current_cmd_full"
-match_type = "regex"
-pattern = '^(?:.*/)?(?:clang\+\+|g\+\+|clang|gcc|cc)(?=\s|$)(?!.*?\.s\b)(?!.*?\.S\b).*?\s-c(\s|$)'
-comment = "VERIFIED: A driver (clang, gcc) whose primary task is to compile a source file (-c). Its memory usage represents the compilation cost."
-
-[[rules]]
-major_category = "CPP_Compile"
-category = "GenericCompileWrapper"
-priority = 124
-match_field = "current_cmd_name"
-match_type = "regex"
-pattern = "(?:^|/)compile$"
-comment = "Catches generic 'compile' scripts or symlinks, assuming compilation intent."
-
-[[rules]]
-major_category = "CPP_Link"
-category = "Driver_Link"
-priority = 120
-match_field = "current_cmd_full"
-match_type = "regex"
-pattern = '^(?:.*/)?(?:clang\+\+|g\+\+|clang|gcc|cc)(?=\s|$)(?!.*?(\s-c|\s-S|\s-E)(\s|$)).*?\s-o\s'
-comment = "VERIFIED: A driver (clang, gcc) whose primary task is to link object files. Its memory usage represents the linking cost."
-
-[[rules]]
-major_category = "CPP_Link"
-category = "GenericLinkWrapper"
-priority = 119
-match_field = "current_cmd_name"
-match_type = "regex"
-pattern = "(?:^|/)link$"
-comment = "Catches generic 'link' scripts or symlinks, assuming linking intent."
-
-# Priority 50-99 (Low - Fallback / General Purpose)
-[[rules]]
-major_category = "CPP_Driver"
-category = "Driver_Clang_Fallback"
-priority = 85
-match_field = "current_cmd_name"
-match_type = "in_list"
-patterns = ["clang", "clang++", "cc"]
-comment = "VERIFIED: A Clang/cc driver process that was NOT matched by a more specific rule (like compile or link). This is a generic driver."
-
-[[rules]]
-major_category = "CPP_Driver"
-category = "Driver_GCC_Fallback"
-priority = 84
-match_field = "current_cmd_name"
-match_type = "in_list"
-patterns = ["gcc", "g++"]
-comment = "VERIFIED: A GCC/g++ driver process that was NOT matched by a more specific rule. This is a generic driver."
+pattern = "collect2"
+comment = "Standard GCC collector - coordinates non-LTO linking"
+examples = [
+    "collect2 --eh-frame-hdr -m elf_x86_64 --hash-style=gnu --as-needed -dynamic-linker /lib64/ld-linux-x86-64.so.2 -pie /usr/lib/gcc/x86_64-linux-gnu/9/../../../x86_64-linux-gnu/Scrt1.o main.o -lstdc++ -lm -lgcc_s -lgcc -lc",
+]
 
 [[rules]]
 major_category = "Java_Compile"
@@ -538,7 +706,7 @@ comment = "Specific Go test runners used in Soong."
 major_category = "Testing"
 category = "GoTestBinary"
 priority = 10
-match_field = "orig_cmd_full"
+match_field = "current_cmd_full"
 match_type = "regex"
 pattern = '(_test/.*\s-test\.|\.test(\s|$))'
 comment = "Generic Go test binaries, matched as a last resort."

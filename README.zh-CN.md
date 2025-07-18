@@ -181,8 +181,24 @@ MyMonitor 使用 Plotly 自动生成交互式图表：
 - **双轴可视化**: 在同一图表上显示内存（柱状图）和持续时间（线图）
 
 ### 详细图表
-- **时间序列线图**: 按类别显示内存使用趋势
-- **堆叠面积图**: 按进程类别显示总内存组成
+
+#### 🎯 交互式分类切换功能（默认）
+
+**时间序列线图** 和 **堆叠面积图** 现在支持动态分类切换，用户可在同一个HTML文件中切换不同的分类视图：
+
+- **📊 大类视图**（默认）：显示主要分类（如 `CPP_COMPILE`、`CPP_LINK`、`Other` 等）
+- **🔍 详细小类**：展开显示所有子分类的详细信息（如 `Frontend_GCC`、`Full_GCC`、`Executable_Link` 等）
+- **📋 展开Other**：保持大类不变，但将 `Other` 分类展开为具体的子分类
+
+**优势**：
+- 🖱️ 用户可在浏览器中点击按钮实时切换视图
+- 📈 同一个图表文件包含多种详细程度的信息
+- 🎨 不同视图间颜色保持一致，便于对比分析
+- 💾 减少文件数量，提升用户体验
+
+**生成的文件**：
+- `project_j8_PSS_KB_interactive_lines_plot.html` - 交互式时间序列线图
+- `project_j8_PSS_KB_interactive_stacked_plot.html` - 交互式堆叠面积图
 - **交互功能**: 缩放、平移、悬停详情、类别过滤
 
 ### 图表生成
@@ -202,6 +218,13 @@ python tools/plotter.py --log-dir logs/run_20250703_143052 --jobs 8
 # 按类别或前N个过滤
 python tools/plotter.py --log-dir logs/run_20250703_143052 --category CPP_Compile
 python tools/plotter.py --log-dir logs/run_20250703_143052 --top-n 5
+
+# 分类展示选项（传统模式，生成单一视图的图表）
+python tools/plotter.py --log-dir logs/run_20250703_143052 --expand-subcategories  # 展开所有小类
+python tools/plotter.py --log-dir logs/run_20250703_143052 --expand-other          # 只展开Other分类
+
+# 默认模式：生成交互式图表，用户可在浏览器中动态切换视图
+python tools/plotter.py --log-dir logs/run_20250703_143052                         # 交互式图表
 ```
 
 ### 存储格式转换

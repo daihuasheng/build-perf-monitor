@@ -484,6 +484,18 @@ def validate_rules_config(rules_data: List[Dict[str, Any]]) -> List[RuleConfig]:
             patterns_value = final_patterns
             pattern_value = final_patterns if isinstance(final_patterns, str) else None
 
+            # Validate examples field (optional)
+            examples = rule_data.get("examples", [])
+            if not isinstance(examples, list):
+                raise ValidationError(
+                    f"rules[{i}]: 'examples' must be a list of strings"
+                )
+
+            # Validate that all examples are strings
+            for j, example in enumerate(examples):
+                if not isinstance(example, str):
+                    raise ValidationError(f"rules[{i}].examples[{j}]: must be a string")
+
             rule_config = RuleConfig(
                 priority=priority,
                 major_category=major_category,
@@ -493,6 +505,7 @@ def validate_rules_config(rules_data: List[Dict[str, Any]]) -> List[RuleConfig]:
                 patterns=patterns_value,
                 pattern=pattern_value,
                 comment=rule_data.get("comment", ""),
+                examples=examples,
             )
             rules_config.append(rule_config)
 

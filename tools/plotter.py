@@ -97,13 +97,13 @@ def _parse_summary_log(filepath: Path) -> Optional[Dict[str, Any]]:
             assert jobs_match is not None
             assert duration_match is not None
             assert peak_mem_match is not None
-            
+
             # Parse memory and convert to GB if necessary
             mem_val = float(peak_mem_match.group(2))
             mem_unit = peak_mem_match.group(3)
             if mem_unit == "KB":
-                mem_val /= (1024 * 1024) # Convert KB to GB
-            
+                mem_val /= 1024 * 1024  # Convert KB to GB
+
             # Return a dictionary with standardized keys for DataFrame creation.
             return {
                 "project": project_match.group(1).strip(),
@@ -228,7 +228,7 @@ def generate_run_summary_plot(args: argparse.Namespace):
     for project_name, group_df in df_summary.groupby("project"):
         # Ensure project_name is a string for type safety
         project_name_str = str(project_name)
-        
+
         # A comparison plot requires at least two data points.
         if len(group_df) < 2:
             logger.info(
@@ -296,6 +296,98 @@ def _get_primary_metric_from_summary_log(data_filepath: Path) -> Optional[str]:
     return "RSS_KB"
 
 
+def _prepare_interactive_categorization_data(
+    df_pl: pl.DataFrame, primary_metric_col: str = "PSS_KB"
+) -> dict:
+    """Prepare data for interactive categorization switching.
+
+    This function prepares multiple views of the same data for interactive switching:
+    1. Major categories view (default)
+    2. Subcategories view (detailed)
+    3. Expanded 'Other' view (hybrid)
+
+    Args:
+        df_pl: DataFrame with 'major_category' and 'category' columns
+
+    Returns:
+        Dictionary with different categorization views
+    """
+    logger.info("Preparing interactive categorization data for dynamic switching")
+
+    # View 1: Major categories only
+    df_major = df_pl.with_columns(pl.col("major_category").alias("Category"))
+    df_major_agg = df_major.group_by(["epoch", "Category"]).agg(
+        pl.col(primary_metric_col).sum().alias(primary_metric_col)
+    )
+
+    # View 2: All subcategories
+    df_sub = df_pl.with_columns(pl.col("category").alias("Category"))
+    df_sub_agg = df_sub.group_by(["epoch", "Category"]).agg(
+        pl.col(primary_metric_col).sum().alias(primary_metric_col)
+    )
+
+    # View 3: Major categories with expanded 'Other'
+    df_other = df_pl.with_columns(
+        pl.when(pl.col("major_category") == "Other")
+        .then(pl.col("category"))  # Use subcategory for 'Other'
+        .otherwise(pl.col("major_category"))  # Use major category for others
+        .alias("Category")
+    )
+    df_other_agg = df_other.group_by(["epoch", "Category"]).agg(
+        pl.col(primary_metric_col).sum().alias(primary_metric_col)
+    )
+
+    return {
+        "major": df_major_agg,
+        "subcategories": df_sub_agg,
+        "expanded_other": df_other_agg,
+    }
+
+
+def _apply_categorization_strategy(df_pl: pl.DataFrame, args) -> pl.DataFrame:
+    """Apply categorization strategy based on command line arguments.
+
+    This function is kept for backward compatibility with command line options.
+    For interactive plots, use _prepare_interactive_categorization_data instead.
+
+    Args:
+        df_pl: DataFrame with 'major_category' and 'category' columns
+        args: Command line arguments
+
+    Returns:
+        DataFrame with a 'Category' column for plotting
+    """
+    if args and (args.expand_subcategories or args.expand_other):
+        # Use legacy command-line based categorization
+        if args.expand_subcategories:
+            df_pl = df_pl.with_columns(pl.col("category").alias("Category"))
+            logger.info("Using subcategory-level grouping for detailed view")
+        elif args.expand_other:
+            df_pl = df_pl.with_columns(
+                pl.when(pl.col("major_category") == "Other")
+                .then(pl.col("category"))  # Use subcategory for 'Other'
+                .otherwise(pl.col("major_category"))  # Use major category for others
+                .alias("Category")
+            )
+            logger.info("Using major categories with expanded 'Other' subcategories")
+    else:
+        # Default: show major categories only
+        df_pl = df_pl.with_columns(pl.col("major_category").alias("Category"))
+        logger.info("Using major category-level grouping (default)")
+
+    return df_pl
+
+
+def _get_plot_filename_suffix(args) -> str:
+    """Get filename suffix based on categorization strategy."""
+    if args.expand_subcategories:
+        return "_detailed"
+    elif args.expand_other:
+        return "_expanded_other"
+    else:
+        return ""
+
+
 def _save_plotly_figure(fig: go.Figure, base_filename: str, output_dir: Path):
     """Saves a Plotly figure to both HTML and, if possible, PNG formats.
 
@@ -333,12 +425,275 @@ def _save_plotly_figure(fig: go.Figure, base_filename: str, output_dir: Path):
         )
 
 
+def _create_interactive_line_plot(
+    data_views: dict,
+    primary_metric_col: str,
+    resample_interval_str: str,
+    data_filepath: Path,
+) -> go.Figure:
+    """Create an interactive line plot with categorization switching buttons.
+
+    Args:
+        data_views: Dictionary with different categorization views
+        primary_metric_col: The name of the column containing memory data
+        resample_interval_str: The resampling interval string
+        data_filepath: The path of the original data file, for titling
+
+    Returns:
+        Plotly Figure with interactive categorization switching
+    """
+    fig = go.Figure()
+
+    # Prepare data for each view
+    view_data = {}
+    for view_name, df_view in data_views.items():
+        # Resample data for each category
+        resampled_dfs_list = []
+        for _, group_df in df_view.group_by("Category", maintain_order=True):
+            if group_df.is_empty():
+                continue
+            resampled_cat_df = (
+                group_df.sort("epoch")
+                .with_columns(pl.from_epoch("epoch", time_unit="s").alias("Timestamp"))
+                .group_by_dynamic(
+                    index_column="Timestamp",
+                    every=resample_interval_str,
+                    group_by="Category",
+                )
+                .agg(pl.col(primary_metric_col).mean().alias(primary_metric_col))
+                .fill_null(0)
+            )
+            if not resampled_cat_df.is_empty():
+                resampled_dfs_list.append(resampled_cat_df)
+
+        if resampled_dfs_list:
+            combined_df = pl.concat(resampled_dfs_list)
+            view_data[view_name] = combined_df.to_pandas()
+
+    # Add traces for the default view (major categories)
+    if "major" in view_data:
+        default_data = view_data["major"]
+        for category in default_data["Category"].unique():
+            cat_data = default_data[default_data["Category"] == category]
+            fig.add_trace(
+                go.Scatter(
+                    x=cat_data["Timestamp"],
+                    y=cat_data[primary_metric_col],
+                    mode="lines+markers",
+                    name=category,
+                    visible=True,  # Default view is visible
+                )
+            )
+
+        # Add total line for default view
+        total_data = (
+            default_data.groupby("Timestamp")[primary_metric_col].sum().reset_index()
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=total_data["Timestamp"],
+                y=total_data[primary_metric_col],
+                mode="lines",
+                name="Total (Sum of Categories)",
+                line={"color": "black", "dash": "dash"},
+                visible=True,
+            )
+        )
+
+    return fig
+
+
+def _create_interactive_line_plot_with_switching(
+    data_views: dict,
+    primary_metric_col: str,
+    resample_interval_str: str,
+    data_filepath: Path,
+) -> go.Figure:
+    """Create an interactive line plot with categorization switching buttons.
+
+    This creates a single HTML plot where users can dynamically switch between:
+    1. Major categories view (default)
+    2. Detailed subcategories view
+    3. Expanded 'Other' view
+
+    Args:
+        data_views: Dictionary with different categorization views
+        primary_metric_col: The name of the column containing memory data
+        resample_interval_str: The resampling interval string
+        data_filepath: The path of the original data file, for titling
+
+    Returns:
+        Plotly Figure with interactive categorization switching
+    """
+    fig = go.Figure()
+
+    # Prepare resampled data for each view
+    view_traces = {}
+    all_categories = set()
+
+    for view_name, df_view in data_views.items():
+        if df_view.is_empty():
+            continue
+
+        # Convert epoch to timestamp and resample
+        df_with_timestamp = df_view.with_columns(
+            pl.from_epoch("epoch", time_unit="s").alias("Timestamp")
+        )
+
+        # Resample data for each category
+        resampled_dfs_list = []
+        for _, group_df in df_with_timestamp.group_by("Category", maintain_order=True):
+            if group_df.is_empty():
+                continue
+            resampled_cat_df = (
+                group_df.sort("Timestamp")
+                .group_by_dynamic(
+                    index_column="Timestamp",
+                    every=resample_interval_str,
+                    group_by="Category",
+                )
+                .agg(pl.col(primary_metric_col).mean().alias(primary_metric_col))
+                .fill_null(0)
+            )
+            if not resampled_cat_df.is_empty():
+                resampled_dfs_list.append(resampled_cat_df)
+
+        if resampled_dfs_list:
+            combined_df = pl.concat(resampled_dfs_list)
+            pandas_df = combined_df.to_pandas()
+            view_traces[view_name] = pandas_df
+            all_categories.update(pandas_df["Category"].unique())
+
+    if not view_traces:
+        logger.warning("No data available for interactive plot")
+        return fig
+
+    # Create color mapping for consistent colors across views
+    import plotly.colors as pc
+
+    colors = pc.qualitative.Set3 + pc.qualitative.Pastel + pc.qualitative.Set1
+    color_map = {
+        cat: colors[i % len(colors)] for i, cat in enumerate(sorted(all_categories))
+    }
+
+    # Add traces for all views (initially hidden except default)
+    trace_count = 0
+    view_trace_ranges = {}
+
+    for view_name, pandas_df in view_traces.items():
+        start_idx = trace_count
+        is_default = view_name == "major"
+
+        # Add category traces
+        for category in pandas_df["Category"].unique():
+            cat_data = pandas_df[pandas_df["Category"] == category]
+            fig.add_trace(
+                go.Scatter(
+                    x=cat_data["Timestamp"],
+                    y=cat_data[primary_metric_col],
+                    mode="lines+markers",
+                    name=category,
+                    line=dict(color=color_map.get(category, "gray")),
+                    visible=is_default,  # Only default view visible initially
+                    legendgroup=view_name,
+                )
+            )
+            trace_count += 1
+
+        # Add total line
+        total_data = (
+            pandas_df.groupby("Timestamp")[primary_metric_col].sum().reset_index()
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=total_data["Timestamp"],
+                y=total_data[primary_metric_col],
+                mode="lines",
+                name="Total (Sum of Categories)",
+                line={"color": "black", "dash": "dash", "width": 2},
+                visible=is_default,
+                legendgroup=view_name,
+            )
+        )
+        trace_count += 1
+
+        view_trace_ranges[view_name] = (start_idx, trace_count - 1)
+
+    # Create visibility arrays for each view
+    total_traces = trace_count
+    visibility_arrays = {}
+    for view_name, (start_idx, end_idx) in view_trace_ranges.items():
+        visibility = [False] * total_traces
+        for i in range(start_idx, end_idx + 1):
+            visibility[i] = True
+        visibility_arrays[view_name] = visibility
+
+    # Add interactive buttons for switching views
+    buttons = []
+    view_labels = {
+        "major": "📊 大类视图",
+        "subcategories": "🔍 详细小类",
+        "expanded_other": "📋 展开Other",
+    }
+
+    for view_name in ["major", "subcategories", "expanded_other"]:
+        if view_name in visibility_arrays:
+            buttons.append(
+                dict(
+                    label=view_labels.get(view_name, view_name),
+                    method="update",
+                    args=[
+                        {"visible": visibility_arrays[view_name]},
+                        {
+                            "title": f"Memory Usage Over Time ({primary_metric_col} - {view_labels.get(view_name, view_name)}) - {data_filepath.stem}<br>Resample: {resample_interval_str}"
+                        },
+                    ],
+                )
+            )
+
+    # Update layout with buttons and styling
+    fig.update_layout(
+        title=f"Memory Usage Over Time ({primary_metric_col} - 大类视图) - {data_filepath.stem}<br>Resample: {resample_interval_str}",
+        xaxis_title=f"Time (Resampled to {resample_interval_str} intervals)",
+        yaxis_title=f"Average {primary_metric_col} Memory Usage (KB)",
+        legend_title_text="Category",
+        updatemenus=[
+            dict(
+                type="buttons",
+                direction="left",
+                buttons=buttons,
+                pad={"r": 10, "t": 10},
+                showactive=True,
+                x=0.01,
+                xanchor="left",
+                y=1.02,
+                yanchor="top",
+            ),
+        ],
+        annotations=[
+            dict(
+                text="分类视图:",
+                showarrow=False,
+                x=0,
+                y=1.08,
+                xref="paper",
+                yref="paper",
+                align="left",
+                font=dict(size=12),
+            )
+        ],
+    )
+
+    return fig
+
+
 def _generate_line_plot_plotly(
     df_plot_data: pl.DataFrame,
     primary_metric_col: str,
     resample_interval_str: str,
     data_filepath: Path,
     output_dir: Path,
+    args=None,
 ):
     """Generates and saves an interactive line plot using Plotly.
 
@@ -348,6 +703,7 @@ def _generate_line_plot_plotly(
         resample_interval_str: The Polars interval string for resampling (e.g., '5s').
         data_filepath: The path of the original data file, for titling.
         output_dir: The directory to save the plot file.
+        args: Command line arguments (optional)
     """
     if df_plot_data.is_empty():
         logger.warning(
@@ -355,6 +711,58 @@ def _generate_line_plot_plotly(
         )
         return
 
+    # Check if we should use legacy command-line categorization or interactive mode
+    if args and (args.expand_subcategories or args.expand_other):
+        # Use legacy single-view mode for backward compatibility
+        df_plot_data = _apply_categorization_strategy(df_plot_data, args)
+        df_plot_data = df_plot_data.group_by(["epoch", "Category"]).agg(
+            pl.col(primary_metric_col).sum().alias(primary_metric_col)
+        )
+
+        # Convert epoch to timestamp for plotting
+        df_plot_data = df_plot_data.with_columns(
+            pl.from_epoch("epoch", time_unit="s").alias("Timestamp")
+        )
+
+        # Create traditional single-view plot
+        _create_legacy_line_plot(
+            df_plot_data,
+            primary_metric_col,
+            resample_interval_str,
+            data_filepath,
+            output_dir,
+            args,
+        )
+    else:
+        # Use new interactive multi-view mode
+        logger.info("Creating interactive line plot with categorization switching")
+
+        # Prepare multiple data views
+        data_views = _prepare_interactive_categorization_data(
+            df_plot_data, primary_metric_col
+        )
+
+        # Create interactive plot with switching capability
+        fig = _create_interactive_line_plot_with_switching(
+            data_views, primary_metric_col, resample_interval_str, data_filepath
+        )
+
+        # Save the interactive plot
+        base_plot_filename = (
+            f"{data_filepath.stem}_{primary_metric_col}_interactive_lines_plot"
+        )
+        _save_plotly_figure(fig, base_plot_filename, output_dir)
+
+
+def _create_legacy_line_plot(
+    df_plot_data,
+    primary_metric_col,
+    resample_interval_str,
+    data_filepath,
+    output_dir,
+    args,
+):
+    """Create legacy single-view line plot for backward compatibility."""
     # Resample data for each category to create smoother lines.
     resampled_dfs_list = []
     for _, group_df in df_plot_data.group_by("Category", maintain_order=True):
@@ -423,7 +831,8 @@ def _generate_line_plot_plotly(
         yaxis_title=f"Average {primary_metric_col} Memory Usage (KB)",
     )
 
-    base_plot_filename = f"{data_filepath.stem}_{primary_metric_col}_lines_plot"
+    suffix = _get_plot_filename_suffix(args) if args else ""
+    base_plot_filename = f"{data_filepath.stem}_{primary_metric_col}_lines_plot{suffix}"
     _save_plotly_figure(fig, base_plot_filename, output_dir)
 
 
@@ -433,6 +842,7 @@ def _generate_stacked_area_plot_plotly(
     resample_interval_str: str,
     data_filepath: Path,
     output_dir: Path,
+    args=None,
 ):
     """Generates and saves an interactive stacked area plot using Plotly.
 
@@ -442,6 +852,7 @@ def _generate_stacked_area_plot_plotly(
         resample_interval_str: The Polars interval string for resampling (e.g., '5s').
         data_filepath: The path of the original data file, for titling.
         output_dir: The directory to save the plot file.
+        args: Command line arguments (optional)
     """
     if df_plot_data.is_empty():
         logger.warning(
@@ -449,6 +860,60 @@ def _generate_stacked_area_plot_plotly(
         )
         return
 
+    # Check if we should use legacy command-line categorization or interactive mode
+    if args and (args.expand_subcategories or args.expand_other):
+        # Use legacy single-view mode for backward compatibility
+        df_plot_data = _apply_categorization_strategy(df_plot_data, args)
+        df_plot_data = df_plot_data.group_by(["epoch", "Category"]).agg(
+            pl.col(primary_metric_col).sum().alias(primary_metric_col)
+        )
+
+        # Convert epoch to timestamp for plotting
+        df_plot_data = df_plot_data.with_columns(
+            pl.from_epoch("epoch", time_unit="s").alias("Timestamp")
+        )
+
+        # Create traditional single-view plot
+        _create_legacy_stacked_plot(
+            df_plot_data,
+            primary_metric_col,
+            resample_interval_str,
+            data_filepath,
+            output_dir,
+            args,
+        )
+    else:
+        # Use new interactive multi-view mode
+        logger.info(
+            "Creating interactive stacked area plot with categorization switching"
+        )
+
+        # Prepare multiple data views
+        data_views = _prepare_interactive_categorization_data(
+            df_plot_data, primary_metric_col
+        )
+
+        # Create interactive plot with switching capability
+        fig = _create_interactive_stacked_plot_with_switching(
+            data_views, primary_metric_col, resample_interval_str, data_filepath
+        )
+
+        # Save the interactive plot
+        base_plot_filename = (
+            f"{data_filepath.stem}_{primary_metric_col}_interactive_stacked_plot"
+        )
+        _save_plotly_figure(fig, base_plot_filename, output_dir)
+
+
+def _create_legacy_stacked_plot(
+    df_plot_data,
+    primary_metric_col,
+    resample_interval_str,
+    data_filepath,
+    output_dir,
+    args,
+):
+    """Create legacy single-view stacked plot for backward compatibility."""
     # Resample data to prepare for plotting.
     resampled_df = (
         df_plot_data.sort("Timestamp")
@@ -485,8 +950,176 @@ def _generate_stacked_area_plot_plotly(
         yaxis_title=f"Total {primary_metric_col} Memory Usage (KB) - Stacked",
     )
 
-    base_plot_filename = f"{data_filepath.stem}_{primary_metric_col}_stacked_plot"
+    suffix = _get_plot_filename_suffix(args) if args else ""
+    base_plot_filename = (
+        f"{data_filepath.stem}_{primary_metric_col}_stacked_plot{suffix}"
+    )
     _save_plotly_figure(fig, base_plot_filename, output_dir)
+
+
+def _create_interactive_stacked_plot_with_switching(
+    data_views: dict,
+    primary_metric_col: str,
+    resample_interval_str: str,
+    data_filepath: Path,
+) -> go.Figure:
+    """Create an interactive stacked area plot with categorization switching buttons.
+
+    This creates a single HTML plot where users can dynamically switch between:
+    1. Major categories view (default)
+    2. Detailed subcategories view
+    3. Expanded 'Other' view
+
+    Args:
+        data_views: Dictionary with different categorization views
+        primary_metric_col: The name of the column containing memory data
+        resample_interval_str: The resampling interval string
+        data_filepath: The path of the original data file, for titling
+
+    Returns:
+        Plotly Figure with interactive categorization switching
+    """
+    fig = go.Figure()
+
+    # Prepare resampled data for each view
+    view_traces = {}
+    all_categories = set()
+
+    for view_name, df_view in data_views.items():
+        if df_view.is_empty():
+            continue
+
+        # Convert epoch to timestamp and resample
+        df_with_timestamp = df_view.with_columns(
+            pl.from_epoch("epoch", time_unit="s").alias("Timestamp")
+        )
+
+        # Resample data for stacked area plot
+        resampled_df = (
+            df_with_timestamp.sort("Timestamp")
+            .group_by_dynamic(
+                index_column="Timestamp",
+                every=resample_interval_str,
+                group_by="Category",
+            )
+            .agg(
+                pl.col(primary_metric_col).mean().fill_null(0).alias(primary_metric_col)
+            )
+        )
+
+        if not resampled_df.is_empty():
+            pandas_df = resampled_df.to_pandas()
+            view_traces[view_name] = pandas_df
+            all_categories.update(pandas_df["Category"].unique())
+
+    if not view_traces:
+        logger.warning("No data available for interactive stacked plot")
+        return fig
+
+    # Create color mapping for consistent colors across views
+    import plotly.colors as pc
+
+    colors = pc.qualitative.Set3 + pc.qualitative.Pastel + pc.qualitative.Set1
+    color_map = {
+        cat: colors[i % len(colors)] for i, cat in enumerate(sorted(all_categories))
+    }
+
+    # Add traces for all views (initially hidden except default)
+    trace_count = 0
+    view_trace_ranges = {}
+
+    for view_name, pandas_df in view_traces.items():
+        start_idx = trace_count
+        is_default = view_name == "major"
+
+        # Create stacked area traces for each category
+        for category in pandas_df["Category"].unique():
+            cat_data = pandas_df[pandas_df["Category"] == category]
+            fig.add_trace(
+                go.Scatter(
+                    x=cat_data["Timestamp"],
+                    y=cat_data[primary_metric_col],
+                    mode="lines",
+                    name=category,
+                    fill="tonexty" if trace_count > start_idx else "tozeroy",
+                    line=dict(color=color_map.get(category, "gray")),
+                    visible=is_default,  # Only default view visible initially
+                    legendgroup=view_name,
+                    stackgroup=(
+                        "one" if is_default else view_name
+                    ),  # Different stack groups for different views
+                )
+            )
+            trace_count += 1
+
+        view_trace_ranges[view_name] = (start_idx, trace_count - 1)
+
+    # Create visibility arrays for each view
+    total_traces = trace_count
+    visibility_arrays = {}
+    for view_name, (start_idx, end_idx) in view_trace_ranges.items():
+        visibility = [False] * total_traces
+        for i in range(start_idx, end_idx + 1):
+            visibility[i] = True
+        visibility_arrays[view_name] = visibility
+
+    # Add interactive buttons for switching views
+    buttons = []
+    view_labels = {
+        "major": "📊 大类视图",
+        "subcategories": "🔍 详细小类",
+        "expanded_other": "📋 展开Other",
+    }
+
+    for view_name in ["major", "subcategories", "expanded_other"]:
+        if view_name in visibility_arrays:
+            buttons.append(
+                dict(
+                    label=view_labels.get(view_name, view_name),
+                    method="update",
+                    args=[
+                        {"visible": visibility_arrays[view_name]},
+                        {
+                            "title": f"Memory Usage Over Time ({primary_metric_col} - {view_labels.get(view_name, view_name)} - Stacked) - {data_filepath.stem}<br>Resample: {resample_interval_str}"
+                        },
+                    ],
+                )
+            )
+
+    # Update layout with buttons and styling
+    fig.update_layout(
+        title=f"Memory Usage Over Time ({primary_metric_col} - 大类视图 - Stacked) - {data_filepath.stem}<br>Resample: {resample_interval_str}",
+        xaxis_title=f"Time (Resampled to {resample_interval_str} intervals)",
+        yaxis_title=f"Total {primary_metric_col} Memory Usage (KB) - Stacked",
+        legend_title_text="Category",
+        updatemenus=[
+            dict(
+                type="buttons",
+                direction="left",
+                buttons=buttons,
+                pad={"r": 10, "t": 10},
+                showactive=True,
+                x=0.01,
+                xanchor="left",
+                y=1.02,
+                yanchor="top",
+            ),
+        ],
+        annotations=[
+            dict(
+                text="分类视图:",
+                showarrow=False,
+                x=0,
+                y=1.08,
+                xref="paper",
+                yref="paper",
+                align="left",
+                font=dict(size=12),
+            )
+        ],
+    )
+
+    return fig
 
 
 # --- Main Worker Function ---
@@ -526,14 +1159,11 @@ def plot_memory_usage_from_data_file(data_filepath: Path, args: argparse.Namespa
             return
 
         # The 'Record_Type' column is no longer used; all data is per-process.
-        # Use major_category as the primary grouping for plotting (showing "big categories")
-        # Instead of combining major and minor categories, use only major_category
-        df_pl = df_pl.with_columns(
-            pl.col("major_category").alias("Category")
-        )
+        # Determine the categorization strategy based on command line arguments
+        df_pl = _apply_categorization_strategy(df_pl, args)
 
-        # Aggregate data by epoch and Category (major_category) since we now have
-        # multiple processes per major_category that need to be summed
+        # Aggregate data by epoch and Category since we now have
+        # multiple processes per category that need to be summed
         df_pl = df_pl.group_by(["epoch", "Category"]).agg(
             pl.col(primary_metric_col).sum().alias(primary_metric_col)
         )
@@ -559,9 +1189,7 @@ def plot_memory_usage_from_data_file(data_filepath: Path, args: argparse.Namespa
             return
 
         # Exclude categories marked as 'Ignored_'.
-        df_pl = df_pl.filter(
-            ~pl.col("Category").str.starts_with("Ignored_")
-        )
+        df_pl = df_pl.filter(~pl.col("Category").str.starts_with("Ignored_"))
         if df_pl.is_empty():
             logger.warning("No data after filtering ignored categories. Skipping.")
             return
@@ -569,9 +1197,7 @@ def plot_memory_usage_from_data_file(data_filepath: Path, args: argparse.Namespa
         # --- Custom Filtering based on CLI arguments ---
         if args.category:
             logger.info(f"Filtering for user-specified categories: {args.category}")
-            df_pl = df_pl.filter(
-                pl.col("Category").is_in(args.category)
-            )
+            df_pl = df_pl.filter(pl.col("Category").is_in(args.category))
         elif args.top_n:
             logger.info(f"Filtering for top {args.top_n} categories by peak memory.")
             top_categories = (
@@ -581,9 +1207,7 @@ def plot_memory_usage_from_data_file(data_filepath: Path, args: argparse.Namespa
                 .head(args.top_n)["Category"]
                 .to_list()
             )
-            df_pl = df_pl.filter(
-                pl.col("Category").is_in(top_categories)
-            )
+            df_pl = df_pl.filter(pl.col("Category").is_in(top_categories))
         else:
             # Default behavior: filter for categories that meet a minimum total memory usage.
             category_total_metric = df_pl.group_by("Category").agg(
@@ -592,9 +1216,7 @@ def plot_memory_usage_from_data_file(data_filepath: Path, args: argparse.Namespa
             significant_categories = category_total_metric.filter(
                 pl.col("total_metric") >= MIN_TOTAL_PRIMARY_METRIC_KB_FOR_PLOT
             )["Category"].to_list()
-            df_pl = df_pl.filter(
-                pl.col("Category").is_in(significant_categories)
-            )
+            df_pl = df_pl.filter(pl.col("Category").is_in(significant_categories))
 
         if df_pl.is_empty():
             logger.warning(
@@ -602,9 +1224,7 @@ def plot_memory_usage_from_data_file(data_filepath: Path, args: argparse.Namespa
             )
             return
 
-        logger.info(
-            f"Plotting for categories: {df_pl['Category'].unique().to_list()}"
-        )
+        logger.info(f"Plotting for categories: {df_pl['Category'].unique().to_list()}")
 
         # Convert epoch seconds to a datetime object for time-series plotting.
         df_plot_data_pl = df_pl.with_columns(
@@ -621,18 +1241,18 @@ def plot_memory_usage_from_data_file(data_filepath: Path, args: argparse.Namespa
             # Dynamically determine resampling interval based on data size
             # Use number of data points as a proxy for duration to avoid datetime type issues
             num_samples = len(df_plot_data_pl)
-            
+
             # Heuristic: estimate data collection duration based on sample count
             # Assuming typical monitoring intervals of 1-2 seconds per sample
             if num_samples <= 60:  # ~1 minute of data
                 resample_interval_str_polars = "5s"
-            elif num_samples <= 300:  # ~5 minutes of data  
+            elif num_samples <= 300:  # ~5 minutes of data
                 resample_interval_str_polars = "10s"
             elif num_samples <= 900:  # ~15 minutes of data
                 resample_interval_str_polars = "30s"
             else:  # Longer builds
                 resample_interval_str_polars = "1m"
-            
+
             logger.info(
                 f"Data points: {num_samples}. Using resample interval: {resample_interval_str_polars}"
             )
@@ -645,6 +1265,7 @@ def plot_memory_usage_from_data_file(data_filepath: Path, args: argparse.Namespa
                 resample_interval_str_polars,
                 data_filepath,
                 output_dir,
+                args,
             )
         if args.chart_type in ["stacked", "all"]:
             _generate_stacked_area_plot_plotly(
@@ -653,6 +1274,7 @@ def plot_memory_usage_from_data_file(data_filepath: Path, args: argparse.Namespa
                 resample_interval_str_polars,
                 data_filepath,
                 output_dir,
+                args,
             )
 
     except pl.exceptions.NoDataError:
@@ -709,6 +1331,16 @@ def main():
         type=str,
         help="Override automatic resampling. Use Polars interval string (e.g., '1s', '10s', '1m').",
     )
+    parser.add_argument(
+        "--expand-subcategories",
+        action="store_true",
+        help="Show subcategories instead of major categories. Provides more detailed breakdown.",
+    )
+    parser.add_argument(
+        "--expand-other",
+        action="store_true",
+        help="Expand 'Other' major category to show individual subcategories.",
+    )
 
     # A mutually exclusive group ensures that the user can only specify one
     # of these filtering methods at a time.
@@ -737,49 +1369,61 @@ def main():
     if not args.log_dir.is_dir():
         logger.error(f"Log directory not found: {args.log_dir}")
         sys.exit(1)
-    
+
     # Additional validation for numeric arguments
     if args.jobs is not None:
         if args.jobs < 1 or args.jobs > 1024:
-            logger.error(f"Invalid --jobs value: {args.jobs}. Must be between 1 and 1024.")
+            logger.error(
+                f"Invalid --jobs value: {args.jobs}. Must be between 1 and 1024."
+            )
             sys.exit(1)
-    
+
     if args.top_n is not None:
         if args.top_n < 1 or args.top_n > 100:
-            logger.error(f"Invalid --top-n value: {args.top_n}. Must be between 1 and 100.")
+            logger.error(
+                f"Invalid --top-n value: {args.top_n}. Must be between 1 and 100."
+            )
             sys.exit(1)
-    
+
     # Validate project name format if provided
     if args.project_name is not None:
         if not isinstance(args.project_name, str) or not args.project_name.strip():
             logger.error("Project name cannot be empty.")
             sys.exit(1)
-        
+
         # Check for valid characters (basic validation)
         import re
-        if not re.match(r'^[a-zA-Z0-9_-]+$', args.project_name):
-            logger.error(f"Invalid project name '{args.project_name}'. Only letters, numbers, hyphens, and underscores are allowed.")
+
+        if not re.match(r"^[a-zA-Z0-9_-]+$", args.project_name):
+            logger.error(
+                f"Invalid project name '{args.project_name}'. Only letters, numbers, hyphens, and underscores are allowed."
+            )
             sys.exit(1)
-    
+
     # Validate output directory if provided
     if args.output_dir is not None:
         if not args.output_dir.parent.exists():
-            logger.error(f"Parent directory of output directory does not exist: {args.output_dir.parent}")
+            logger.error(
+                f"Parent directory of output directory does not exist: {args.output_dir.parent}"
+            )
             sys.exit(1)
-        
+
         # Try to create the output directory if it doesn't exist
         try:
             args.output_dir.mkdir(parents=True, exist_ok=True)
         except OSError as e:
             logger.error(f"Cannot create output directory '{args.output_dir}': {e}")
             sys.exit(1)
-    
+
     # Validate resample interval format if provided
     if args.resample_interval is not None:
         # Basic validation for Polars interval format
         import re
-        if not re.match(r'^\d+[smhdw]$', args.resample_interval):
-            logger.error(f"Invalid resample interval format '{args.resample_interval}'. Expected format: number followed by s/m/h/d/w (e.g., '10s', '1m').")
+
+        if not re.match(r"^\d+[smhdw]$", args.resample_interval):
+            logger.error(
+                f"Invalid resample interval format '{args.resample_interval}'. Expected format: number followed by s/m/h/d/w (e.g., '10s', '1m')."
+            )
             sys.exit(1)
 
     # --- Dispatch to the correct mode ---
