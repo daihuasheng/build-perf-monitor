@@ -316,13 +316,13 @@ def _prepare_interactive_categorization_data(
 
     # View 1: Major categories only
     df_major = df_pl.with_columns(pl.col("major_category").alias("Category"))
-    df_major_agg = df_major.group_by(["epoch", "Category"]).agg(
+    df_major_agg = df_major.group_by(["timestamp", "Category"]).agg(
         pl.col(primary_metric_col).sum().alias(primary_metric_col)
     )
 
     # View 2: All subcategories
     df_sub = df_pl.with_columns(pl.col("category").alias("Category"))
-    df_sub_agg = df_sub.group_by(["epoch", "Category"]).agg(
+    df_sub_agg = df_sub.group_by(["timestamp", "Category"]).agg(
         pl.col(primary_metric_col).sum().alias(primary_metric_col)
     )
 
@@ -333,7 +333,7 @@ def _prepare_interactive_categorization_data(
         .otherwise(pl.col("major_category"))  # Use major category for others
         .alias("Category")
     )
-    df_other_agg = df_other.group_by(["epoch", "Category"]).agg(
+    df_other_agg = df_other.group_by(["timestamp", "Category"]).agg(
         pl.col(primary_metric_col).sum().alias(primary_metric_col)
     )
 
@@ -535,10 +535,8 @@ def _create_interactive_line_plot_with_switching(
         if df_view.is_empty():
             continue
 
-        # Convert epoch to timestamp and resample
-        df_with_timestamp = df_view.with_columns(
-            pl.from_epoch("epoch", time_unit="s").alias("Timestamp")
-        )
+        # Use timestamp column directly (already in correct format)
+        df_with_timestamp = df_view.with_columns(pl.col("timestamp").alias("Timestamp"))
 
         # Resample data for each category
         resampled_dfs_list = []
@@ -715,14 +713,12 @@ def _generate_line_plot_plotly(
     if args and (args.expand_subcategories or args.expand_other):
         # Use legacy single-view mode for backward compatibility
         df_plot_data = _apply_categorization_strategy(df_plot_data, args)
-        df_plot_data = df_plot_data.group_by(["epoch", "Category"]).agg(
+        df_plot_data = df_plot_data.group_by(["timestamp", "Category"]).agg(
             pl.col(primary_metric_col).sum().alias(primary_metric_col)
         )
 
-        # Convert epoch to timestamp for plotting
-        df_plot_data = df_plot_data.with_columns(
-            pl.from_epoch("epoch", time_unit="s").alias("Timestamp")
-        )
+        # Use timestamp column directly (already in correct format)
+        df_plot_data = df_plot_data.with_columns(pl.col("timestamp").alias("Timestamp"))
 
         # Create traditional single-view plot
         _create_legacy_line_plot(
@@ -864,14 +860,12 @@ def _generate_stacked_area_plot_plotly(
     if args and (args.expand_subcategories or args.expand_other):
         # Use legacy single-view mode for backward compatibility
         df_plot_data = _apply_categorization_strategy(df_plot_data, args)
-        df_plot_data = df_plot_data.group_by(["epoch", "Category"]).agg(
+        df_plot_data = df_plot_data.group_by(["timestamp", "Category"]).agg(
             pl.col(primary_metric_col).sum().alias(primary_metric_col)
         )
 
-        # Convert epoch to timestamp for plotting
-        df_plot_data = df_plot_data.with_columns(
-            pl.from_epoch("epoch", time_unit="s").alias("Timestamp")
-        )
+        # Use timestamp column directly (already in correct format)
+        df_plot_data = df_plot_data.with_columns(pl.col("timestamp").alias("Timestamp"))
 
         # Create traditional single-view plot
         _create_legacy_stacked_plot(
@@ -989,10 +983,8 @@ def _create_interactive_stacked_plot_with_switching(
         if df_view.is_empty():
             continue
 
-        # Convert epoch to timestamp and resample
-        df_with_timestamp = df_view.with_columns(
-            pl.from_epoch("epoch", time_unit="s").alias("Timestamp")
-        )
+        # Use timestamp column directly (already in correct format)
+        df_with_timestamp = df_view.with_columns(pl.col("timestamp").alias("Timestamp"))
 
         # Resample data for stacked area plot
         resampled_df = (
@@ -1162,14 +1154,14 @@ def plot_memory_usage_from_data_file(data_filepath: Path, args: argparse.Namespa
         # Determine the categorization strategy based on command line arguments
         df_pl = _apply_categorization_strategy(df_pl, args)
 
-        # Aggregate data by epoch and Category since we now have
+        # Aggregate data by timestamp and Category since we now have
         # multiple processes per category that need to be summed
-        df_pl = df_pl.group_by(["epoch", "Category"]).agg(
+        df_pl = df_pl.group_by(["timestamp", "Category"]).agg(
             pl.col(primary_metric_col).sum().alias(primary_metric_col)
         )
 
         # Validate that all necessary columns are present.
-        required_cols = ["epoch", "Category", primary_metric_col]
+        required_cols = ["timestamp", "Category", primary_metric_col]
         if not all(col in df_pl.columns for col in required_cols):
             missing = [c for c in required_cols if c not in df_pl.columns]
             logger.error(
