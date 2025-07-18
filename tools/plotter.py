@@ -453,8 +453,8 @@ def _create_interactive_line_plot(
             if group_df.is_empty():
                 continue
             resampled_cat_df = (
-                group_df.sort("epoch")
-                .with_columns(pl.from_epoch("epoch", time_unit="s").alias("Timestamp"))
+                group_df.sort("timestamp")
+                .with_columns(pl.col("timestamp").alias("Timestamp"))
                 .group_by_dynamic(
                     index_column="Timestamp",
                     every=resample_interval_str,
@@ -1218,10 +1218,8 @@ def plot_memory_usage_from_data_file(data_filepath: Path, args: argparse.Namespa
 
         logger.info(f"Plotting for categories: {df_pl['Category'].unique().to_list()}")
 
-        # Convert epoch seconds to a datetime object for time-series plotting.
-        df_plot_data_pl = df_pl.with_columns(
-            pl.from_epoch("epoch", time_unit="s").alias("Timestamp")
-        )
+        # Use timestamp column directly for time-series plotting.
+        df_plot_data_pl = df_pl.with_columns(pl.col("timestamp").alias("Timestamp"))
 
         # --- Resampling Interval Logic ---
         if args.resample_interval:
