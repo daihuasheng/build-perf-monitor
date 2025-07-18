@@ -288,6 +288,27 @@ def test_utils():
     return TestUtils
 
 
+@pytest.fixture(autouse=True)
+def clear_config_after_test():
+    """Automatically clear configuration cache after each test."""
+    from pathlib import Path
+
+    # Store original config path (default path)
+    original_config_path = Path(__file__).parent.parent / "conf" / "config.toml"
+
+    yield  # Run the test
+
+    # Clean up after test
+    from mymonitor.config import clear_config_cache, set_config_path
+    from mymonitor.classification.classifier import clear_categorization_cache
+
+    clear_config_cache()
+    clear_categorization_cache()
+
+    # Always reset to original config path
+    set_config_path(original_config_path)
+
+
 # ============================================================================
 # Performance Test Fixtures
 # ============================================================================
