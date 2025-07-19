@@ -244,13 +244,58 @@ def generate_run_summary_plot(args: argparse.Namespace):
         _save_plotly_figure(fig, base_filename, args.output_dir or args.log_dir)
 
 
+def _get_primary_metric_from_data_file(data_filepath: Path) -> str:
+    """Determines the primary metric column from the actual data file.
+
+    For the new data format, the memory data is stored in a 'memory_kb' column,
+    which contains the primary metric value. This function checks the data file
+    structure and returns the appropriate column name.
+
+    Args:
+        data_filepath: The path to the `.parquet` data file.
+
+    Returns:
+        The name of the primary metric column to use for plotting.
+    """
+    try:
+        # Read just the column names to check the data structure
+        df = pl.read_parquet(data_filepath, n_rows=0)  # Read only schema
+
+        if "memory_kb" in df.columns:
+            # New format: use the unified memory_kb column
+            logger.info("Using 'memory_kb' column from new data format.")
+            return "memory_kb"
+        elif "PSS_KB" in df.columns:
+            # Legacy format: use specific metric columns
+            logger.info("Using 'PSS_KB' column from legacy data format.")
+            return "PSS_KB"
+        elif "RSS_KB" in df.columns:
+            # Legacy format: fallback to RSS
+            logger.info("Using 'RSS_KB' column from legacy data format.")
+            return "RSS_KB"
+        else:
+            # Fallback: try to find any column ending with _KB
+            kb_columns = [col for col in df.columns if col.endswith("_KB")]
+            if kb_columns:
+                metric = kb_columns[0]
+                logger.warning(f"Using fallback metric column: {metric}")
+                return metric
+            else:
+                logger.error(
+                    f"No suitable memory metric column found in {data_filepath}"
+                )
+                return "memory_kb"  # Default fallback
+
+    except Exception as e:
+        logger.error(f"Error reading data file {data_filepath}: {e}. Using fallback.")
+        return "memory_kb"
+
+
 def _get_primary_metric_from_summary_log(data_filepath: Path) -> Optional[str]:
     """Parses the corresponding _summary.log file to find the primary metric.
 
-    For a given data file (e.g., `proj_j4.parquet`), this function looks for
-    `proj_j4_summary.log` to determine which memory metric (e.g., PSS_KB,
-    RSS_KB) was used for the run. This allows the plotting functions to use
-    the correct data column.
+    This function is kept for backward compatibility but is no longer the primary
+    method for determining the metric column. Use _get_primary_metric_from_data_file instead.
 
     Args:
         data_filepath: The path to the `.parquet` data file.
@@ -535,8 +580,10 @@ def _create_interactive_line_plot_with_switching(
         if df_view.is_empty():
             continue
 
-        # Use timestamp column directly (already in correct format)
-        df_with_timestamp = df_view.with_columns(pl.col("timestamp").alias("Timestamp"))
+        # Convert timestamp to datetime for group_by_dynamic
+        df_with_timestamp = df_view.with_columns(
+            pl.from_epoch("timestamp", time_unit="s").alias("Timestamp")
+        )
 
         # Resample data for each category
         resampled_dfs_list = []
@@ -983,8 +1030,10 @@ def _create_interactive_stacked_plot_with_switching(
         if df_view.is_empty():
             continue
 
-        # Use timestamp column directly (already in correct format)
-        df_with_timestamp = df_view.with_columns(pl.col("timestamp").alias("Timestamp"))
+        # Convert timestamp to datetime for group_by_dynamic
+        df_with_timestamp = df_view.with_columns(
+            pl.from_epoch("timestamp", time_unit="s").alias("Timestamp")
+        )
 
         # Resample data for stacked area plot
         resampled_df = (
@@ -1137,12 +1186,8 @@ def plot_memory_usage_from_data_file(data_filepath: Path, args: argparse.Namespa
     output_dir = args.output_dir or data_filepath.parent
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    primary_metric_col = _get_primary_metric_from_summary_log(data_filepath)
-    if not primary_metric_col:
-        logger.error(
-            f"Could not determine primary metric for {data_filepath.name}. Skipping."
-        )
-        return
+    primary_metric_col = _get_primary_metric_from_data_file(data_filepath)
+    logger.info(f"Using primary metric column: {primary_metric_col}")
 
     try:
         df_pl = pl.read_parquet(data_filepath)
@@ -1151,23 +1196,41 @@ def plot_memory_usage_from_data_file(data_filepath: Path, args: argparse.Namespa
             return
 
         # The 'Record_Type' column is no longer used; all data is per-process.
-        # Determine the categorization strategy based on command line arguments
-        df_pl = _apply_categorization_strategy(df_pl, args)
+        # Check if we should use legacy command-line categorization or interactive mode
+        if args and (args.expand_subcategories or args.expand_other):
+            # Use legacy single-view mode for backward compatibility
+            df_pl = _apply_categorization_strategy(df_pl, args)
 
-        # Aggregate data by timestamp and Category since we now have
-        # multiple processes per category that need to be summed
-        df_pl = df_pl.group_by(["timestamp", "Category"]).agg(
-            pl.col(primary_metric_col).sum().alias(primary_metric_col)
-        )
-
-        # Validate that all necessary columns are present.
-        required_cols = ["timestamp", "Category", primary_metric_col]
-        if not all(col in df_pl.columns for col in required_cols):
-            missing = [c for c in required_cols if c not in df_pl.columns]
-            logger.error(
-                f"Data in {data_filepath} missing required columns: {missing}."
+            # Aggregate data by timestamp and Category since we now have
+            # multiple processes per category that need to be summed
+            df_pl = df_pl.group_by(["timestamp", "Category"]).agg(
+                pl.col(primary_metric_col).sum().alias(primary_metric_col)
             )
-            return
+        else:
+            # For interactive mode, we'll handle categorization in the plotting functions
+            # Just ensure we have the required columns for interactive data preparation
+            required_base_cols = [
+                "timestamp",
+                "major_category",
+                "category",
+                primary_metric_col,
+            ]
+            if not all(col in df_pl.columns for col in required_base_cols):
+                missing = [c for c in required_base_cols if c not in df_pl.columns]
+                logger.error(
+                    f"Data in {data_filepath} missing required columns for interactive mode: {missing}."
+                )
+                return
+
+        # Validate that all necessary columns are present (only for legacy mode)
+        if args and (args.expand_subcategories or args.expand_other):
+            required_cols = ["timestamp", "Category", primary_metric_col]
+            if not all(col in df_pl.columns for col in required_cols):
+                missing = [c for c in required_cols if c not in df_pl.columns]
+                logger.error(
+                    f"Data in {data_filepath} missing required columns: {missing}."
+                )
+                return
 
         # Ensure the metric column is numeric and filter out nulls.
         df_pl = df_pl.with_columns(
@@ -1180,35 +1243,50 @@ def plot_memory_usage_from_data_file(data_filepath: Path, args: argparse.Namespa
             )
             return
 
-        # Exclude categories marked as 'Ignored_'.
-        df_pl = df_pl.filter(~pl.col("Category").str.starts_with("Ignored_"))
+        # Exclude categories marked as 'Ignored'.
+        if args and (args.expand_subcategories or args.expand_other):
+            # Legacy mode: filter by Category column
+            df_pl = df_pl.filter(~pl.col("Category").str.starts_with("Ignored"))
+        else:
+            # Interactive mode: filter by major_category column
+            df_pl = df_pl.filter(~pl.col("major_category").str.starts_with("Ignored"))
+
         if df_pl.is_empty():
             logger.warning("No data after filtering ignored categories. Skipping.")
             return
 
         # --- Custom Filtering based on CLI arguments ---
-        if args.category:
+        # Note: For interactive mode, we'll apply filtering based on major_category
+        # since the detailed filtering will be handled in the plotting functions
+        if args and (args.expand_subcategories or args.expand_other):
+            # Legacy mode: use Category column for filtering
+            category_col = "Category"
+        else:
+            # Interactive mode: use major_category for basic filtering
+            category_col = "major_category"
+
+        if args and args.category:
             logger.info(f"Filtering for user-specified categories: {args.category}")
-            df_pl = df_pl.filter(pl.col("Category").is_in(args.category))
-        elif args.top_n:
+            df_pl = df_pl.filter(pl.col(category_col).is_in(args.category))
+        elif args and args.top_n:
             logger.info(f"Filtering for top {args.top_n} categories by peak memory.")
             top_categories = (
-                df_pl.group_by("Category")
+                df_pl.group_by(category_col)
                 .agg(pl.col(primary_metric_col).max().alias("peak_mem"))
                 .sort("peak_mem", descending=True)
-                .head(args.top_n)["Category"]
+                .head(args.top_n)[category_col]
                 .to_list()
             )
-            df_pl = df_pl.filter(pl.col("Category").is_in(top_categories))
+            df_pl = df_pl.filter(pl.col(category_col).is_in(top_categories))
         else:
             # Default behavior: filter for categories that meet a minimum total memory usage.
-            category_total_metric = df_pl.group_by("Category").agg(
+            category_total_metric = df_pl.group_by(category_col).agg(
                 pl.col(primary_metric_col).sum().alias("total_metric")
             )
             significant_categories = category_total_metric.filter(
                 pl.col("total_metric") >= MIN_TOTAL_PRIMARY_METRIC_KB_FOR_PLOT
-            )["Category"].to_list()
-            df_pl = df_pl.filter(pl.col("Category").is_in(significant_categories))
+            )[category_col].to_list()
+            df_pl = df_pl.filter(pl.col(category_col).is_in(significant_categories))
 
         if df_pl.is_empty():
             logger.warning(
@@ -1216,7 +1294,14 @@ def plot_memory_usage_from_data_file(data_filepath: Path, args: argparse.Namespa
             )
             return
 
-        logger.info(f"Plotting for categories: {df_pl['Category'].unique().to_list()}")
+        if args and (args.expand_subcategories or args.expand_other):
+            logger.info(
+                f"Plotting for categories: {df_pl['Category'].unique().to_list()}"
+            )
+        else:
+            logger.info(
+                f"Plotting for categories: {df_pl['major_category'].unique().to_list()}"
+            )
 
         # Use timestamp column directly for time-series plotting.
         df_plot_data_pl = df_pl.with_columns(pl.col("timestamp").alias("Timestamp"))

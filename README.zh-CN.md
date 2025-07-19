@@ -112,6 +112,12 @@ mymonitor -p qemu -j 8,4,2,1
 
 # 跳过预构建清理
 mymonitor -p qemu --no-pre-clean
+
+# 跳过构建后清理
+mymonitor -p qemu --no-post-clean
+
+# 跳过所有清理操作
+mymonitor -p qemu --no-pre-clean --no-post-clean
 ```
 
 ### 命令行选项
@@ -119,6 +125,7 @@ mymonitor -p qemu --no-pre-clean
 - `-p, --project PROJECT`: 指定要监控的项目
 - `-j, --jobs JOBS`: 逗号分隔的并行度级别（如 "8,16"）
 - `--no-pre-clean`: 跳过预构建清理步骤
+- `--no-post-clean`: 跳过构建后清理步骤
 - `-h, --help`: 显示帮助信息
 
 ### 可用项目

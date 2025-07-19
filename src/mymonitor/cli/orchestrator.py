@@ -191,6 +191,10 @@ class BuildRunner:
                 cpu_plan.monitoring_cores
             )
 
+            # Execute pre-build clean if not skipped
+            if not self.skip_pre_clean:
+                await self._execute_clean_command("pre-build")
+
             # Start build process
             logger.info(f"Starting build with -j{self.parallelism_level}")
             build_pid = await self.build_runner.start_build_async()
@@ -233,6 +237,36 @@ class BuildRunner:
                 asyncio.create_task(self.build_runner.cancel_build_async())
             except Exception as e:
                 logger.warning(f"Error cancelling build: {e}")
+
+    async def execute_final_clean_async(self) -> None:
+        """Execute final clean command after all builds are complete."""
+        await self._execute_clean_command("post-build")
+
+    def execute_final_clean(self) -> None:
+        """Execute final clean command synchronously."""
+        try:
+            # Check if we're already in an async context
+            try:
+                loop = asyncio.get_running_loop()
+                # If we get here, we're in an async context, create a task
+                asyncio.create_task(self.execute_final_clean_async())
+                return
+            except RuntimeError:
+                # No event loop running, we can create one
+                pass
+
+            # Create and run new event loop for the clean operation
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            try:
+                loop.run_until_complete(self.execute_final_clean_async())
+            finally:
+                loop.close()
+                asyncio.set_event_loop(None)
+
+        except Exception as e:
+            logger.error(f"Error executing final clean: {e}", exc_info=True)
 
     async def _setup_run_context(self) -> None:
         """Setup the run context for monitoring."""
@@ -304,6 +338,63 @@ class BuildRunner:
 
         except Exception as e:
             logger.warning(f"Error during cleanup: {e}")
+
+    async def _execute_clean_command(self, stage: str) -> None:
+        """
+        Execute the project's clean command.
+
+        Args:
+            stage: Description of when this clean is being executed (e.g., "pre-build", "post-build")
+        """
+        if not self.project_config.clean_command_template:
+            logger.info(
+                f"No clean command configured for project {self.project_config.name}, skipping {stage} clean"
+            )
+            return
+
+        clean_command = self.project_config.clean_command_template.replace(
+            "<N>", str(self.parallelism_level)
+        )
+
+        logger.info(f"Executing {stage} clean command: {clean_command}")
+
+        try:
+            import subprocess
+            import os
+
+            # Execute clean command in the project directory
+            process = subprocess.Popen(
+                clean_command,
+                shell=True,
+                cwd=Path(self.project_config.dir),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                env=os.environ.copy(),
+            )
+
+            # Wait for completion with timeout
+            try:
+                stdout, stderr = process.communicate(timeout=300)  # 5 minute timeout
+
+                if process.returncode == 0:
+                    logger.info(f"Clean command completed successfully ({stage})")
+                    if stdout.strip():
+                        logger.debug(f"Clean stdout: {stdout.strip()}")
+                else:
+                    logger.warning(
+                        f"Clean command failed with return code {process.returncode} ({stage})"
+                    )
+                    if stderr.strip():
+                        logger.warning(f"Clean stderr: {stderr.strip()}")
+
+            except subprocess.TimeoutExpired:
+                logger.error(f"Clean command timed out after 5 minutes ({stage})")
+                process.kill()
+                process.communicate()  # Clean up
+
+        except Exception as e:
+            logger.error(f"Error executing {stage} clean command: {e}", exc_info=True)
 
     def run(self) -> bool:
         """

@@ -126,6 +126,12 @@ mymonitor -p qemu -j 8,4,2,1
 
 # Skip pre-build cleanup
 mymonitor -p qemu --no-pre-clean
+
+# Skip post-build cleanup
+mymonitor -p qemu --no-post-clean
+
+# Skip all cleanup operations
+mymonitor -p qemu --no-pre-clean --no-post-clean
 ```
 
 ### Command Line Options
@@ -133,6 +139,7 @@ mymonitor -p qemu --no-pre-clean
 - `-p, --project PROJECT`: Specify project to monitor
 - `-j, --jobs JOBS`: Comma-separated parallelism levels (e.g., "8,16")
 - `--no-pre-clean`: Skip pre-build cleanup step
+- `--no-post-clean`: Skip post-build cleanup step
 - `-h, --help`: Show help message
 
 ### Available Projects

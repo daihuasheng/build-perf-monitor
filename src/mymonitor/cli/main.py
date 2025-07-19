@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 def main_cli() -> None:
     """
     Main command-line interface for the MyMonitor application.
-    
+
     This function provides the primary entry point for the CLI, handling:
     - Multiprocessing configuration for cross-platform compatibility
     - Configuration loading and validation
@@ -46,11 +46,11 @@ def main_cli() -> None:
     - Project and job validation
     - Monitoring execution coordination
     - Plot generation orchestration
-    
+
     The function sets up multiprocessing to use the 'spawn' method for stability
     across different platforms and processes each specified project with each
     specified parallelism level.
-    
+
     Raises:
         SystemExit: On configuration errors, validation failures, or execution problems.
     """
@@ -64,10 +64,12 @@ def main_cli() -> None:
         if shutdown_requested:
             logger.warning("Shutdown already in progress. Please be patient.")
             return
-            
-        logger.info(f"Signal {signal.strsignal(signum)} received. Initiating graceful shutdown...")
+
+        logger.info(
+            f"Signal {signal.strsignal(signum)} received. Initiating graceful shutdown..."
+        )
         shutdown_requested = True
-        
+
         # If a runner is active, request it to shut down its components.
         if active_runner:
             logger.info("Requesting active build runner to shut down...")
@@ -90,7 +92,7 @@ def main_cli() -> None:
             context="configuration loading",
             exit_code=1,
             include_traceback=True,
-            logger=logger
+            logger=logger,
         )
 
     monitor_config = app_config.monitor
@@ -116,6 +118,11 @@ def main_cli() -> None:
         action="store_true",
         help="Skip the pre-build clean step defined in the project config.",
     )
+    parser.add_argument(
+        "--no-post-clean",
+        action="store_true",
+        help="Skip the post-build clean step after all builds are completed.",
+    )
     args = parser.parse_args()
 
     # Validate and filter projects
@@ -123,8 +130,7 @@ def main_cli() -> None:
         # Validate project name format first
         try:
             validated_project_name = validate_project_name(
-                args.project,
-                field_name="--project argument"
+                args.project, field_name="--project argument"
             )
         except ValidationError as e:
             handle_cli_error(
@@ -132,14 +138,18 @@ def main_cli() -> None:
                 context="project name validation",
                 exit_code=1,
                 include_traceback=False,
-                logger=logger
+                logger=logger,
             )
-        
+
         # Check if project exists in configuration
-        projects_to_run = [p for p in app_config.projects if p.name == validated_project_name]
+        projects_to_run = [
+            p for p in app_config.projects if p.name == validated_project_name
+        ]
         if not projects_to_run:
             available_projects = [p.name for p in app_config.projects]
-            logger.error(f"Project '{validated_project_name}' not found in configuration.")
+            logger.error(
+                f"Project '{validated_project_name}' not found in configuration."
+            )
             logger.info(f"Available projects: {', '.join(available_projects)}")
             sys.exit(1)
     else:
@@ -152,7 +162,7 @@ def main_cli() -> None:
                 args.jobs,
                 min_jobs=1,
                 max_jobs=1024,  # Reasonable upper limit
-                field_name="--jobs argument"
+                field_name="--jobs argument",
             )
         except ValidationError as e:
             handle_cli_error(
@@ -160,7 +170,7 @@ def main_cli() -> None:
                 context="jobs argument validation",
                 exit_code=1,
                 include_traceback=False,
-                logger=logger
+                logger=logger,
             )
     else:
         jobs_to_run = monitor_config.default_jobs
@@ -172,11 +182,15 @@ def main_cli() -> None:
     logger.info(f"Log and plot outputs will be saved in: {current_run_output_dir}")
 
     # Execute monitoring for each project and job level combination
+    last_runner_per_project = (
+        {}
+    )  # Keep track of last runner for each project for final cleanup
+
     for project in projects_to_run:
         if shutdown_requested:
             logger.warning("Shutdown requested, skipping further projects.")
             break
-        
+
         logger.info(f">>> Starting processing for project: {project.name}")
 
         # Check system dependencies
@@ -194,9 +208,11 @@ def main_cli() -> None:
         # Run monitoring for each parallelism level
         for j_level in jobs_to_run:
             if shutdown_requested:
-                logger.warning(f"Shutdown requested, skipping further parallelism levels for project '{project.name}'.")
+                logger.warning(
+                    f"Shutdown requested, skipping further parallelism levels for project '{project.name}'."
+                )
                 break
-                
+
             logger.info(f"--- Running with -j{j_level} ---")
             try:
                 runner = BuildRunner(
@@ -208,6 +224,9 @@ def main_cli() -> None:
                     skip_pre_clean=args.no_pre_clean,
                 )
                 active_runner = runner
+                last_runner_per_project[project.name] = (
+                    runner  # Keep reference for final cleanup
+                )
                 runner.run()
             except Exception as e:
                 logger.error(
@@ -216,22 +235,44 @@ def main_cli() -> None:
                 )
                 continue
             finally:
-                active_runner = None # Clear the active runner reference
-                
+                active_runner = None  # Clear the active runner reference
+
         logger.info(f"<<< Finished processing for project: {project.name}")
 
     if shutdown_requested:
-        logger.info("Build monitoring was terminated prematurely due to a shutdown request.")
+        logger.info(
+            "Build monitoring was terminated prematurely due to a shutdown request."
+        )
     else:
         logger.info("All specified build and monitoring tasks completed.")
+
+    # Execute final cleanup for all projects (unless disabled)
+    if not args.no_post_clean and not shutdown_requested:
+        logger.info("--- Starting post-build cleanup ---")
+        for project_name, runner in last_runner_per_project.items():
+            try:
+                logger.info(f"Executing final clean for project: {project_name}")
+                runner.execute_final_clean()
+            except Exception as e:
+                logger.error(
+                    f"Error during final cleanup for project '{project_name}': {e}",
+                    exc_info=True,
+                )
+        logger.info("--- Post-build cleanup completed ---")
+    elif args.no_post_clean:
+        logger.info("Post-build cleanup skipped (--no-post-clean flag)")
+    else:
+        logger.info("Post-build cleanup skipped due to shutdown request")
 
     # Generate plots if not disabled and if not shut down prematurely
     if not monitor_config.skip_plots and not shutdown_requested:
         logger.info("--- Starting plot generation via external tool ---")
         try:
             # Find the plotter tool relative to the package
-            plotter_path = Path(__file__).parent.parent.parent.parent / "tools" / "plotter.py"
-            
+            plotter_path = (
+                Path(__file__).parent.parent.parent.parent / "tools" / "plotter.py"
+            )
+
             # Generate detailed plots
             plotter_cmd_detailed = [
                 sys.executable,
@@ -239,17 +280,23 @@ def main_cli() -> None:
                 "--log-dir",
                 str(current_run_output_dir),
             ]
-            logger.info(f"Executing plotter for detailed plots: {' '.join(plotter_cmd_detailed)}")
+            logger.info(
+                f"Executing plotter for detailed plots: {' '.join(plotter_cmd_detailed)}"
+            )
             result_detailed = subprocess.run(
                 plotter_cmd_detailed, capture_output=True, text=True, check=False
             )
             logger.info("Detailed plotter tool output:\n" + result_detailed.stdout)
             if result_detailed.stderr:
-                logger.warning("Detailed plotter tool stderr:\n" + result_detailed.stderr)
+                logger.warning(
+                    "Detailed plotter tool stderr:\n" + result_detailed.stderr
+                )
 
             # Generate summary plots
             plotter_cmd_summary = plotter_cmd_detailed + ["--summary-plot"]
-            logger.info(f"Executing plotter for summary plot: {' '.join(plotter_cmd_summary)}")
+            logger.info(
+                f"Executing plotter for summary plot: {' '.join(plotter_cmd_summary)}"
+            )
             result_summary = subprocess.run(
                 plotter_cmd_summary, capture_output=True, text=True, check=False
             )
@@ -258,10 +305,13 @@ def main_cli() -> None:
                 logger.warning("Summary plotter tool stderr:\n" + result_summary.stderr)
 
         except Exception as e:
-            logger.error(f"Failed to execute plotter tool: {type(e).__name__}: {e}", exc_info=True)
-            
+            logger.error(
+                f"Failed to execute plotter tool: {type(e).__name__}: {e}",
+                exc_info=True,
+            )
+
         logger.info("--- Plot generation finished ---")
 
 
 if __name__ == "__main__":
-    main_cli() 
+    main_cli()
